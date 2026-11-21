@@ -36,5 +36,12 @@
       "unknown": "Unexpected error while pairing. See the Home Assistant log for details.",
       "not_signed_in": "No user is signed in on the Codie. Sign in on the device, then try again."
     }
+  },
+  "entity": {
+    "binary_sensor": {
+      "connected": {
+        "name": "Connected"
+      }
+    }
   }
 }

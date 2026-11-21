@@ -7,6 +7,7 @@ Later issues extend this harness with more endpoints.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import hmac
 import json
@@ -16,7 +17,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
-from aiohttp import web
+from aiohttp import WSMsgType, web
 from aiohttp.test_utils import TestServer
 
 API = "/v1/api"
@@ -32,6 +33,16 @@ PUBLIC_PATHS = frozenset(
         "/auth/pair/cancel",
     )
 )
+WS_PREFIX = "/v1/ws/"
+WS_QUERY_HEADERS = {
+    "sig": "X-Local-Sig",
+    "timestamp": "X-Local-Timestamp",
+    "nonce": "X-Local-Nonce",
+    "payload_mode": "X-Local-Payload-Mode",
+    "body_hash": "X-Local-Body-Hash",
+    "user_id": "X-Local-User-Id",
+    "session_id": "X-Local-Session-Id",
+}
 SIGNED_HEADERS = (
     "X-Local-Sig",
     "X-Local-Timestamp",
@@ -97,6 +108,16 @@ class FakeCodie:
     cancelled_challenges: list[str] = field(default_factory=list)
     challenge_id: str | None = None
     challenge_state: str = "none"  # none | pending | expired | used | cancelled
+    # Registered tool integrations: id -> {"revision": int, "catalog": dict}.
+    tool_integrations: dict[str, dict[str, Any]] = field(default_factory=dict)
+    deleted_integrations: list[str] = field(default_factory=list)
+    # Reject this many PUTs with 409 before accepting one, as if another writer raced us.
+    put_conflicts: int = 0
+    # Executor WebSocket state.
+    executor_connects: int = 0
+    executor_results: list[dict[str, Any]] = field(default_factory=list)
+    _executor: web.WebSocketResponse | None = None
+    _result_waiters: dict[str, asyncio.Future[dict[str, Any]]] = field(default_factory=dict)
     _server: TestServer | None = None
 
     # --- lifecycle -----------------------------------------------------------------------
@@ -109,12 +130,19 @@ class FakeCodie:
         app.router.add_post(f"{API}/auth/pair/confirm", self._pair_confirm)
         app.router.add_post(f"{API}/auth/pair/cancel", self._pair_cancel)
         app.router.add_get(f"{API}/data/user/system", self._system)
+        tool_path = f"{API}/data/user/tool-integrations/{{integration_id}}"
+        app.router.add_get(tool_path, self._tool_get)
+        app.router.add_put(tool_path, self._tool_put)
+        app.router.add_delete(tool_path, self._tool_delete)
+        app.router.add_get(f"{WS_PREFIX}tool-integrations/{{integration_id}}/executor", self._ws)
         app.router.add_post(f"{API}/data/user/echo", self._echo)
         app.router.add_get(f"{API}/data/user/name/{{name}}", self._name)
         self._server = TestServer(app, host="127.0.0.1")
         await self._server.start_server()
 
     async def stop(self) -> None:
+        # An open WebSocket would hold the server's shutdown for its full grace period.
+        await self.drop_executor()
         if self._server is not None:
             await self._server.close()
             self._server = None
@@ -141,11 +169,58 @@ class FakeCodie:
     def requests_to(self, suffix: str) -> list[RecordedRequest]:
         return [r for r in self.requests if r.path == f"{API}{suffix}"]
 
+    @property
+    def executor_connected(self) -> bool:
+        return self._executor is not None and not self._executor.closed
+
+    async def invoke(
+        self, integration_id: str, name: str, arguments: dict[str, Any], timeout_ms: int = 10000
+    ) -> dict[str, Any]:
+        """Send an `invoke` to the connected executor and return its `result` data."""
+        assert self._executor is not None
+        invocation_id = str(uuid.uuid4())
+        future: asyncio.Future[dict[str, Any]] = asyncio.get_running_loop().create_future()
+        self._result_waiters[invocation_id] = future
+        now_ms = int(self.clock() * 1000)
+        await self._executor.send_json(
+            {
+                "type": "invoke",
+                "data": {
+                    "arguments": arguments,
+                    "call_id": str(uuid.uuid4()),
+                    "deadline_unix_ms": now_ms + timeout_ms,
+                    "integration_id": integration_id,
+                    "invocation_id": invocation_id,
+                    "name": name,
+                    "revision": self.tool_integrations[integration_id]["revision"],
+                    "round_id": "r1",
+                    "session_id": "s1",
+                    "timeout_ms": timeout_ms,
+                    "turn_id": "t1",
+                    "version": "v1",
+                },
+            }
+        )
+        async with asyncio.timeout(5):
+            return await future
+
+    async def drop_executor(self) -> None:
+        """Close the executor socket from the Codie's side."""
+        if self._executor is not None:
+            await self._executor.close()
+
     # --- signature verification ----------------------------------------------------------
 
     def _verify(self, request: web.Request, body: bytes) -> str | None:
         """Return the error code to reject with, or None if the request is valid."""
-        headers = request.headers
+        headers: Any = request.headers
+        if request.path.startswith(WS_PREFIX):
+            # A WebSocket handshake carries the same fields as query parameters.
+            headers = {
+                header: request.query[key]
+                for key, header in WS_QUERY_HEADERS.items()
+                if key in request.query
+            }
         if any(name not in headers for name in SIGNED_HEADERS):
             return "INVALID_SIGNATURE"
         if headers["X-Local-User-Id"] != self.user_id:
@@ -302,6 +377,73 @@ class FakeCodie:
                 },
             }
         )
+
+    async def _tool_get(self, request: web.Request) -> web.Response:
+        entry = self.tool_integrations.get(request.match_info["integration_id"])
+        if entry is None:
+            return _error(404, "NOT_FOUND")
+        return web.json_response({"success": True, "data": self._tool_view(request, entry)})
+
+    def _tool_view(self, request: web.Request, entry: dict[str, Any]) -> dict[str, Any]:
+        return {
+            **entry["catalog"],
+            "integration_id": request.match_info["integration_id"],
+            "revision": entry["revision"],
+            "online": self.executor_connected,
+        }
+
+    async def _tool_put(self, request: web.Request) -> web.Response:
+        integration_id = request.match_info["integration_id"]
+        catalog = await request.json()
+        entry = self.tool_integrations.get(integration_id)
+        current = entry["revision"] if entry else 0
+        if self.put_conflicts > 0:
+            self.put_conflicts -= 1
+            if entry:
+                entry["revision"] += 1
+            return _error(409, "REVISION_CONFLICT")
+        if catalog["expected_revision"] != current:
+            return _error(409, "REVISION_CONFLICT")
+        new = {"revision": current + 1, "catalog": catalog}
+        self.tool_integrations[integration_id] = new
+        return web.json_response({"success": True, "data": self._tool_view(request, new)})
+
+    async def _tool_delete(self, request: web.Request) -> web.Response:
+        integration_id = request.match_info["integration_id"]
+        self.tool_integrations.pop(integration_id, None)
+        self.deleted_integrations.append(integration_id)
+        return web.Response(status=204)
+
+    async def _ws(self, request: web.Request) -> web.StreamResponse:
+        integration_id = request.match_info["integration_id"]
+        entry = self.tool_integrations.get(integration_id)
+        if entry is None:
+            return _error(404, "NOT_FOUND")
+        ws = web.WebSocketResponse()
+        await ws.prepare(request)
+        self._executor = ws
+        self.executor_connects += 1
+        await ws.send_json(
+            {
+                "type": "ready",
+                "data": {
+                    "integration_id": integration_id,
+                    "protocol_version": "v1",
+                    "revision": entry["revision"],
+                },
+            }
+        )
+        async for message in ws:
+            if message.type is not WSMsgType.TEXT:
+                continue
+            payload = json.loads(message.data)
+            if payload.get("type") == "result":
+                data = payload["data"]
+                self.executor_results.append(data)
+                waiter = self._result_waiters.pop(data["invocation_id"], None)
+                if waiter is not None and not waiter.done():
+                    waiter.set_result(data)
+        return ws
 
     async def _echo(self, request: web.Request) -> web.Response:
         """Harness-only signed POST, so tests can exercise bodies."""

@@ -1,6 +1,6 @@
 # 03 — First Tool end to end: `get_home_state`
 
-Status: ready-for-agent
+Status: implemented (manual check pending)
 Type: task
 Blocked by: 02
 
@@ -17,10 +17,18 @@ The tracer slice for home control: the Character can ask Home Assistant what is 
 
 ## Acceptance criteria
 
-- [ ] Against the fake Codie: registration, `ready`, an `invoke` producing a `succeeded` result whose data matches the registered `result_schema`.
-- [ ] The result contains only Exposed entities. A test exposes one entity and hides another.
-- [ ] The binary sensor follows the connection state.
-- [ ] Removing the entry calls `DELETE` on the tool integration.
+- [x] Against the fake Codie: registration, `ready`, an `invoke` producing a `succeeded` result whose data matches the registered `result_schema`.
+- [x] The result contains only Exposed entities. A test exposes one entity and hides another.
+- [x] The binary sensor follows the connection state.
+- [x] Removing the entry calls `DELETE` on the tool integration.
 - [ ] Manual: ask the real Codie's Character "what lights are on?" and get a correct answer.
 
 ## Comments
+
+Implemented 2026-11-21. Wire format taken from github.com/jaycdev/codie-http-api (openapi.json, examples/external_tools.py).
+
+- New: `tools.py` (catalog, registration with 409 re-read/retry, Assist call), `executor.py`, `errors.py`, `binary_sensor.py`. The fake Codie gained tool-integration endpoints and a signed executor WebSocket. 49 tests, mypy strict and ruff clean.
+- The executor WebSocket signature goes in query parameters, as `local_api.py` does. Only a real Codie confirms it: the fake mirrors the client, so tests cannot catch a mismatch.
+- The deadline is `timeout_ms` minus 0.5 s from arrival, not `deadline_unix_ms`, so clock skew cannot break it.
+- Not done: reconnect after a dropped socket (issue 05); the manual "what lights are on?" check; skipping a Tool whose Assist tool is missing (issue 04); `ai_language` for the LLM context.
+- Test setup: `hassil==3.5.0` and `home-assistant-intents==2026.1.28` are pinned in `requirements_test.txt` to match Home Assistant 2026.2.3. The manifest has `after_dependencies: ["conversation"]` so the Assist intents are loaded.

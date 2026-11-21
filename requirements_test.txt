@@ -1,3 +1,5 @@
 pytest-homeassistant-custom-component
 mypy
 ruff
+hassil==3.5.0
+home-assistant-intents==2026.1.28

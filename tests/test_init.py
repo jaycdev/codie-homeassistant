@@ -14,16 +14,18 @@ from custom_components.codie.const import (
     DOMAIN,
 )
 
+from .fake_codie import FakeCodie
 
-async def test_entry_loads_and_unloads(hass: HomeAssistant) -> None:
+
+async def test_entry_loads_and_unloads(hass: HomeAssistant, fake_codie: FakeCodie) -> None:
     entry = MockConfigEntry(
         domain=DOMAIN,
         unique_id="a" * 64,
         data={
-            CONF_HOST: "127.0.0.1",
-            CONF_PORT: 8081,
-            CONF_LOCAL_SECRET: "secret",
-            CONF_USER_ID: "user",
+            CONF_HOST: fake_codie.host,
+            CONF_PORT: fake_codie.port,
+            CONF_LOCAL_SECRET: fake_codie.local_secret,
+            CONF_USER_ID: fake_codie.user_id,
             CONF_INTEGRATION_ID: "7b4a7f6e-0000-4000-8000-000000000000",
         },
     )

@@ -10,11 +10,22 @@ import uuid
 from dataclasses import dataclass
 from typing import Any
 
-from aiohttp import ClientError, ClientSession, ClientTimeout
+from aiohttp import ClientError, ClientSession, ClientTimeout, ClientWebSocketResponse
 from yarl import URL
 
 API_PREFIX = "/v1/api"
+WS_PREFIX = "/v1/ws"
 REQUEST_TIMEOUT = ClientTimeout(total=10)
+
+_WS_QUERY_HEADERS = {
+    "sig": "X-Local-Sig",
+    "timestamp": "X-Local-Timestamp",
+    "nonce": "X-Local-Nonce",
+    "payload_mode": "X-Local-Payload-Mode",
+    "body_hash": "X-Local-Body-Hash",
+    "user_id": "X-Local-User-Id",
+    "session_id": "X-Local-Session-Id",
+}
 
 PAYLOAD_EMPTY = "empty"
 PAYLOAD_JSON = "json"
@@ -156,6 +167,45 @@ class CodieClient:
     async def async_get_system(self) -> dict[str, Any]:
         """Read the device and user details (`machine_id` identifies the device)."""
         return _as_dict(await self.async_request("GET", "/data/user/system"))
+
+    async def async_get_tool_integration(self, integration_id: str) -> dict[str, Any] | None:
+        """Read a registered tool integration, or None if it does not exist."""
+        try:
+            return _as_dict(
+                await self.async_request("GET", f"/data/user/tool-integrations/{integration_id}")
+            )
+        except CodieApiError as err:
+            if err.status == 404:
+                return None
+            raise
+
+    async def async_put_tool_integration(
+        self, integration_id: str, catalog: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Replace the whole catalog. A stale revision raises `CodieApiError` with status 409."""
+        return _as_dict(
+            await self.async_request(
+                "PUT", f"/data/user/tool-integrations/{integration_id}", catalog
+            )
+        )
+
+    async def async_delete_tool_integration(self, integration_id: str) -> None:
+        """Delete a tool integration. The reply has an empty body."""
+        await self.async_request("DELETE", f"/data/user/tool-integrations/{integration_id}")
+
+    async def async_connect_executor(self, integration_id: str) -> ClientWebSocketResponse:
+        """Open the signed executor WebSocket for a tool integration."""
+        path = f"{WS_PREFIX}/tool-integrations/{integration_id}/executor"
+        headers = self._sign("GET", path, b"")
+        # The signature covers the path without its query string.
+        query = {
+            key: headers[header] for key, header in _WS_QUERY_HEADERS.items() if header in headers
+        }
+        url = URL.build(scheme="ws", host=self._host, port=self._port, path=path, query=query)
+        try:
+            return await self._session.ws_connect(url, heartbeat=30)
+        except (ClientError, TimeoutError) as err:
+            raise CodieConnectionError(f"Cannot reach the Codie at {self._host}") from err
 
     async def async_request(self, method: str, path: str, payload: Any | None = None) -> Any:
         """Send a signed request. `path` is relative to the API prefix."""
