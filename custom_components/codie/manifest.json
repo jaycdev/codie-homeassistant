@@ -1,0 +1,12 @@
+{
+  "domain": "codie",
+  "name": "CODE27 Codie",
+  "codeowners": ["@jaycdev"],
+  "config_flow": true,
+  "documentation": "https://github.com/jaycdev/codeihub-homeassistant",
+  "integration_type": "device",
+  "iot_class": "local_push",
+  "issue_tracker": "https://github.com/jaycdev/codeihub-homeassistant/issues",
+  "requirements": [],
+  "version": "0.1.0"
+}

@@ -1,0 +1,40 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Connect to your Codie",
+        "description": "Enter the address of your Codie. You can find its IP address in your router. The Codie must be awake and signed in.",
+        "data": {
+          "host": "Host",
+          "port": "Port"
+        },
+        "data_description": {
+          "host": "The IP address or hostname of the Codie.",
+          "port": "The port of the Codie's local API. Leave at 8081 unless you changed it."
+        }
+      },
+      "pair": {
+        "title": "Pair with your Codie",
+        "description": "Your Codie is now showing a six-digit pairing code. Enter it below. The code is valid for 5 minutes.",
+        "data": {
+          "code": "Pairing code"
+        },
+        "data_description": {
+          "code": "The six-digit code shown on the Codie's screen."
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "Could not reach the Codie. Check the host and port, and that the Codie is awake.",
+      "invalid_code": "That code is not correct. Check the code on the Codie and try again.",
+      "unknown": "Unexpected error while pairing. See the Home Assistant log for details."
+    },
+    "abort": {
+      "already_configured": "This Codie is already set up.",
+      "cannot_connect": "Could not reach the Codie. Check the host and port, and that the Codie is awake.",
+      "code_expired": "The pairing code expired or was already used. Start again to get a new code.",
+      "unknown": "Unexpected error while pairing. See the Home Assistant log for details.",
+      "not_signed_in": "No user is signed in on the Codie. Sign in on the device, then try again."
+    }
+  }
+}
