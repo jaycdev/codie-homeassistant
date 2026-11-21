@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from collections.abc import Awaitable, Callable
 from typing import Any
@@ -11,7 +12,7 @@ from aiohttp import ClientWebSocketResponse, WSMsgType
 
 from .api import CodieClient, CodieError
 from .errors import ToolError
-from .tools import DEFAULT_TIMEOUT_MS
+from .tools import DEFAULT_TIMEOUT_MS, failure_data
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -48,6 +49,7 @@ class CodieExecutor:
             ready = await self._ws.receive_json(timeout=READY_TIMEOUT_S)
             if ready.get("type") != "ready":
                 raise CodieError(f"Expected ready, got {ready.get('type')}")
+            _LOGGER.debug("Executor ready for %s", self._integration_id)
             self._set_connected(True)
             async for message in self._ws:
                 if message.type is WSMsgType.TEXT:
@@ -77,6 +79,12 @@ class CodieExecutor:
             if not isinstance(call, dict) or not {"invocation_id", "name"} <= call.keys():
                 _LOGGER.warning("Ignoring malformed invoke message")
                 return
+            _LOGGER.debug(
+                "Invoke %s(%s) timeout_ms=%s",
+                call["name"],
+                call.get("arguments") or {},
+                call.get("timeout_ms"),
+            )
             task = asyncio.create_task(self._invoke(call))
             self._calls.add(task)
             task.add_done_callback(self._calls.discard)
@@ -92,11 +100,32 @@ class CodieExecutor:
                 result["data"] = await self._handler(call["name"], call.get("arguments") or {})
             result["status"] = "succeeded"
         except TimeoutError:
-            result.update(status="failed", code=ERROR_TIMEOUT)
+            result.update(status="failed", code=ERROR_TIMEOUT, data=failure_data("Timed out"))
         except ToolError as err:
-            result.update(status="failed", code=err.code, message=str(err)[:500])
+            result.update(
+                status=err.status,
+                code=err.code,
+                message=str(err)[:500],
+                data=failure_data(str(err)),
+            )
         except Exception:
             _LOGGER.exception("Tool %s crashed", call["name"])
-            result.update(status="failed", code=ERROR_INTERNAL)
+            result.update(status="failed", code=ERROR_INTERNAL, data=failure_data("Internal error"))
+        if result["status"] == "succeeded":
+            _LOGGER.debug(
+                "Tool %s succeeded, result %d bytes: %.300s",
+                call["name"],
+                len(json.dumps(result["data"], ensure_ascii=False).encode()),
+                result["data"],
+            )
+        else:
+            _LOGGER.warning(
+                "Tool %s(%s) %s: %s %s",
+                call["name"],
+                call.get("arguments") or {},
+                result["status"],
+                result.get("code"),
+                result.get("message") or result["data"].get("error", ""),
+            )
         if self._ws is not None and not self._ws.closed:
             await self._ws.send_json({"type": "result", "data": result})

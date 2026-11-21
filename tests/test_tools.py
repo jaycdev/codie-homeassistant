@@ -79,8 +79,7 @@ async def test_registers_catalog_with_get_home_state(
     catalog = stored["catalog"]
     assert catalog["protocol_version"] == "v1"
     assert catalog["expected_revision"] == 0
-    [tool] = catalog["tools"]
-    assert tool["name"] == "get_home_state"
+    tool = next(t for t in catalog["tools"] if t["name"] == "get_home_state")
     assert tool["risk"] == "read"
     assert tool["confirmation_required"] is False
     assert tool["parameters"]["type"] == "object"

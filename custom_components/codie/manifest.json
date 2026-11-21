@@ -4,10 +4,10 @@
   "codeowners": ["@jaycdev"],
   "after_dependencies": ["conversation"],
   "config_flow": true,
-  "documentation": "https://github.com/jaycdev/codeihub-homeassistant",
+  "documentation": "https://github.com/jaycdev/codiehub-homeassistant",
   "integration_type": "device",
   "iot_class": "local_push",
-  "issue_tracker": "https://github.com/jaycdev/codeihub-homeassistant/issues",
+  "issue_tracker": "https://github.com/jaycdev/codiehub-homeassistant/issues",
   "requirements": [],
   "version": "0.1.0"
 }

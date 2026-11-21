@@ -2,16 +2,25 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
 from dataclasses import dataclass
 from typing import Any
 
+import voluptuous as vol
+from homeassistant.components.homeassistant.exposed_entities import async_should_expose
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
-from homeassistant.helpers import llm
+from homeassistant.helpers import area_registry as ar
+from homeassistant.helpers import device_registry as dr
+from homeassistant.helpers import entity_registry as er
+from homeassistant.helpers import intent, llm
+from homeassistant.helpers.importlib import async_import_module
 
 from .api import CodieApiError, CodieClient
-from .errors import ToolError
+from .errors import ToolError, ToolNeedsClarification
+from .schema import SchemaLimitError, from_voluptuous
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -20,14 +29,27 @@ DEFAULT_TIMEOUT_MS = 10000
 # The Codie accepts at most 16 KiB of result data.
 MAX_RESULT_BYTES = 12000
 MAX_ERROR_CHARS = 1000
+MAX_DESCRIPTION_CHARS = 200
+MAX_NAMES_CHARS = 600
 REGISTER_ATTEMPTS = 3
 
 ERROR_UNKNOWN_TOOL = "unknown_tool"
+ERROR_TOOL_UNAVAILABLE = "tool_unavailable"
 ERROR_HOME_ASSISTANT = "home_assistant_error"
+ERROR_INVALID_ARGUMENTS = "invalid_arguments"
+ERROR_TARGET_NOT_FOUND = "target_not_found"
+ERROR_AMBIGUOUS_TARGET = "ambiguous_target"
+ERROR_INTENT_FAILED = "intent_failed"
+ERROR_ASSIST_FAILED = "assist_failed"
 
-_EMPTY_OBJECT: dict[str, Any] = {"type": "object", "properties": {}, "additionalProperties": False}
+ASSIST_LIVE_CONTEXT = "GetLiveContext"
+ASSIST_TODO_GET_ITEMS = "todo_get_items"
 
-# Assist tools return {"success": bool, "result": str} or {"success": False, "error": str}.
+_AMBIGUOUS_REASONS = frozenset(
+    {intent.MatchFailedReason.DUPLICATE_NAME, intent.MatchFailedReason.MULTIPLE_TARGETS}
+)
+
+# Every Tool returns this one small shape. Assist's own results are reduced to it.
 _ASSIST_RESULT_SCHEMA: dict[str, Any] = {
     "type": "object",
     "properties": {
@@ -47,52 +69,160 @@ class CodieTool:
     name: str
     assist_name: str
     risk: str
-    description: str
-    parameters: dict[str, Any]
-    result_schema: dict[str, Any]
+    # Replaces the Assist description when set.
+    description: str | None = None
+    # Parameters the Character is not offered and whose values are dropped. A guessed filter
+    # such as device_class silently excludes the very entity the user named.
+    hidden: tuple[str, ...] = ()
 
 
 TOOLS: tuple[CodieTool, ...] = (
     CodieTool(
-        name="get_home_state",
-        assist_name="GetLiveContext",
-        risk="read",
+        "get_home_state",
+        ASSIST_LIVE_CONTEXT,
+        "read",
         description=(
             "Get the current state of the user's exposed smart home devices, sensors and areas. "
             "Call it to answer questions about the home, and whenever you are unsure of a "
             "device name or its state."
         ),
-        parameters=_EMPTY_OBJECT,
-        result_schema=_ASSIST_RESULT_SCHEMA,
     ),
+    CodieTool("turn_on", "HassTurnOn", "reversible", hidden=("device_class",)),
+    CodieTool("turn_off", "HassTurnOff", "reversible", hidden=("device_class",)),
+    CodieTool("light_set", "HassLightSet", "reversible"),
+    CodieTool("climate_set_temp", "HassClimateSetTemperature", "reversible"),
+    CodieTool("set_position", "HassSetPosition", "reversible"),
+    CodieTool("fan_set_speed", "HassFanSetSpeed", "reversible"),
+    CodieTool("media_pause", "HassMediaPause", "reversible"),
+    CodieTool("media_unpause", "HassMediaUnpause", "reversible"),
+    CodieTool("media_next", "HassMediaNext", "reversible"),
+    CodieTool("media_previous", "HassMediaPrevious", "reversible"),
+    CodieTool("set_volume", "HassSetVolume", "reversible"),
+    CodieTool("media_search_play", "HassMediaSearchAndPlay", "reversible"),
+    CodieTool("vacuum_start", "HassVacuumStart", "reversible"),
+    CodieTool("list_add_item", "HassListAddItem", "reversible"),
+    CodieTool("todo_get_items", ASSIST_TODO_GET_ITEMS, "read"),
 )
 
 
-def build_catalog(expected_revision: int) -> dict[str, Any]:
+# Where the tools that are not plain intents live. Home Assistant 2026.11 moved them out of
+# `helpers/llm.py` into their integrations and prefixed their names with the integration.
+_API_NAMES = {
+    ASSIST_LIVE_CONTEXT: ("GetLiveContext", "homeassistant__GetLiveContext"),
+    ASSIST_TODO_GET_ITEMS: ("todo_get_items", "todo__get_items"),
+}
+_FALLBACK_CLASSES: dict[str, tuple[tuple[str, str, tuple[Any, ...]], ...]] = {
+    ASSIST_LIVE_CONTEXT: (
+        ("homeassistant.components.homeassistant.llm", "GetLiveContextTool", ()),
+        ("homeassistant.helpers.llm", "GetLiveContextTool", ()),
+    ),
+    ASSIST_TODO_GET_ITEMS: (
+        ("homeassistant.components.todo.llm", "TodoGetItemsTool", ([],)),
+        ("homeassistant.helpers.llm", "TodoGetItemsTool", ([],)),
+    ),
+}
+
+
+def _llm_context() -> llm.LLMContext:
+    """The context for every call: the Assist API only ever sees what Assist exposes."""
+    return llm.LLMContext(
+        platform="codie",
+        context=None,
+        language=None,
+        assistant="conversation",
+        device_id=None,
+    )
+
+
+async def _assist_api_tools(hass: HomeAssistant) -> list[llm.Tool]:
+    try:
+        api = await llm.async_get_api(hass, llm.LLM_API_ASSIST, _llm_context())
+    except HomeAssistantError as err:
+        _LOGGER.debug("Cannot read the Assist API: %s", err)
+        return []
+    return list(api.tools)
+
+
+def find_api_tool(tools: list[llm.Tool], assist_name: str) -> llm.Tool | None:
+    """The Assist API's tool for `assist_name`, under its old or its prefixed name."""
+    names = _API_NAMES.get(assist_name, (assist_name,))
+    return next((tool for tool in tools if tool.name in names), None)
+
+
+async def _fallback_tool(hass: HomeAssistant, assist_name: str) -> llm.Tool | None:
+    for module_name, class_name, arguments in _FALLBACK_CLASSES.get(assist_name, ()):
+        try:
+            module = await async_import_module(hass, module_name)
+        except ImportError:
+            continue
+        if (tool_class := getattr(module, class_name, None)) is not None:
+            tool: llm.Tool = tool_class(*arguments)
+            return tool
+    return None
+
+
+async def _assist_tool(
+    hass: HomeAssistant, assist_name: str, api_tools: list[llm.Tool]
+) -> llm.Tool | None:
+    """The Assist tool itself, or None if this Home Assistant version lacks it.
+
+    Plain intents are read from the intent registry rather than the Assist API's
+    per-conversation list, which shrinks and grows with the Expose list and between versions.
+    The Tools stay fixed, and exposure is enforced when the tool matches its targets.
+    """
+    if assist_name in _API_NAMES:
+        return find_api_tool(api_tools, assist_name) or await _fallback_tool(hass, assist_name)
+    handler = next((h for h in intent.async_get(hass) if h.intent_type == assist_name), None)
+    return llm.IntentTool(assist_name, handler) if handler else None
+
+
+def _version(definition: dict[str, Any]) -> str:
+    """Changes with the definition: the Codie refuses a changed Tool under an old version."""
+    digest = hashlib.sha256(json.dumps(definition, sort_keys=True).encode()).hexdigest()
+    return f"{TOOL_VERSION}-{digest[:8]}"
+
+
+async def build_catalog(hass: HomeAssistant, expected_revision: int) -> dict[str, Any]:
     """The body for `PUT /data/user/tool-integrations/{id}`."""
+    api_tools = await _assist_api_tools(hass)
+    tools: list[dict[str, Any]] = []
+    for tool in TOOLS:
+        if (assist_tool := await _assist_tool(hass, tool.assist_name, api_tools)) is None:
+            _LOGGER.debug(
+                "Assist tool %s is not available; skipping %s", tool.assist_name, tool.name
+            )
+            continue
+        description, parameters = assist_tool.description or "", assist_tool.parameters
+        try:
+            schema = from_voluptuous(parameters)
+            for name in tool.hidden:
+                schema["properties"].pop(name, None)
+        except SchemaLimitError as err:
+            _LOGGER.warning("Skipping tool %s: %s", tool.name, err)
+            continue
+        definition = {
+            "name": tool.name,
+            "description": (tool.description or description)[:MAX_DESCRIPTION_CHARS],
+            "parameters": schema,
+            "result_schema": _ASSIST_RESULT_SCHEMA,
+            "risk": tool.risk,
+            "idempotent": tool.risk == "read",
+            "confirmation_required": False,
+            "timeout_ms": DEFAULT_TIMEOUT_MS,
+        }
+        tools.append({**definition, "version": _version(definition)})
     return {
         "protocol_version": "v1",
         "expected_revision": expected_revision,
         "name": "Home Assistant",
         "enabled": True,
-        "tools": [
-            {
-                "name": tool.name,
-                "version": TOOL_VERSION,
-                "description": tool.description,
-                "parameters": tool.parameters,
-                "result_schema": tool.result_schema,
-                "risk": tool.risk,
-                "idempotent": tool.risk == "read",
-                "confirmation_required": False,
-                "timeout_ms": DEFAULT_TIMEOUT_MS,
-            }
-            for tool in TOOLS
-        ],
+        "tools": tools,
     }
 
 
-async def async_register_catalog(client: CodieClient, integration_id: str) -> int:
+async def async_register_catalog(
+    hass: HomeAssistant, client: CodieClient, integration_id: str
+) -> int:
     """Create or update the catalog and return its new revision.
 
     On a revision conflict the current revision is read again and the PUT retried.
@@ -104,7 +234,7 @@ async def async_register_catalog(client: CodieClient, integration_id: str) -> in
         revision = int(current["revision"]) if current else 0
         try:
             result = await client.async_put_tool_integration(
-                integration_id, build_catalog(revision)
+                integration_id, await build_catalog(hass, revision)
             )
         except CodieApiError as err:
             if err.status != 409 or attempt >= REGISTER_ATTEMPTS:
@@ -121,30 +251,111 @@ async def async_call_tool(
     tool = next((t for t in TOOLS if t.name == name), None)
     if tool is None:
         raise ToolError(ERROR_UNKNOWN_TOOL, f"No tool named {name}")
-    # The Assist API only ever sees entities exposed to the conversation assistant.
-    context = llm.LLMContext(
-        platform="codie",
-        context=None,
-        language=None,
-        assistant="conversation",
-        device_id=None,
-    )
+    context = _llm_context()
     try:
-        api = await llm.async_get_api(hass, llm.LLM_API_ASSIST, context)
-        raw = await api.async_call_tool(llm.ToolInput(tool.assist_name, arguments))
+        api_tools = await _assist_api_tools(hass)
+        assist_tool = await _assist_tool(hass, tool.assist_name, api_tools)
+        if assist_tool is None or (
+            tool.assist_name in _API_NAMES and find_api_tool(api_tools, tool.assist_name) is None
+        ):
+            raise ToolError(
+                ERROR_TOOL_UNAVAILABLE,
+                f"{tool.assist_name} is not available; no exposed entity supports it",
+            )
+        raw = await assist_tool.async_call(
+            hass, llm.ToolInput(assist_tool.name, _visible(tool, arguments)), context
+        )
+    except intent.MatchFailedError as err:
+        reason = err.result.no_match_reason
+        if reason in _AMBIGUOUS_REASONS:
+            raise ToolNeedsClarification(
+                ERROR_AMBIGUOUS_TARGET,
+                f"More than one exposed device matches {err.result.no_match_name or 'that'}",
+            ) from err
+        raise ToolError(
+            ERROR_TARGET_NOT_FOUND,
+            f"No exposed entity or area matches that request ({reason.name if reason else '?'}). "
+            f"Retry with one of these exposed names: {_exposed_names(hass)}",
+        ) from err
+    except (intent.InvalidSlotInfo, vol.Invalid) as err:
+        raise ToolError(ERROR_INVALID_ARGUMENTS, f"Invalid arguments for {name}") from err
+    except intent.IntentError as err:
+        raise ToolError(
+            ERROR_INTENT_FAILED, str(err) or "Home Assistant could not do that"
+        ) from err
     except HomeAssistantError as err:
         raise ToolError(ERROR_HOME_ASSISTANT, str(err)) from err
     return _shape_result(raw)
 
 
-def _shape_result(raw: dict[str, Any]) -> dict[str, Any]:
-    """Reduce an Assist result to the stable shape of `_ASSIST_RESULT_SCHEMA`."""
-    data: dict[str, Any] = {"success": bool(raw.get("success", "error" not in raw))}
-    if "result" in raw:
-        data["result"] = _truncate(str(raw["result"]), MAX_RESULT_BYTES)
-    if raw.get("error"):
-        data["error"] = str(raw["error"])[:MAX_ERROR_CHARS]
+def _exposed_names(hass: HomeAssistant) -> str:
+    """The names of the entities Assist may use, with their areas, cut to fit an error."""
+    entities = er.async_get(hass)
+    devices = dr.async_get(hass)
+    areas = ar.async_get(hass)
+    names: list[str] = []
+    for state in hass.states.async_all():
+        if not async_should_expose(hass, "conversation", state.entity_id):
+            continue
+        area_id = None
+        if entry := entities.async_get(state.entity_id):
+            device = devices.async_get(entry.device_id) if entry.device_id else None
+            area_id = entry.area_id or (device.area_id if device else None)
+        area = areas.async_get_area(area_id) if area_id else None
+        names.append(f"{state.name} ({area.name})" if area else state.name)
+    text = ", ".join(sorted(names))
+    return text if len(text) <= MAX_NAMES_CHARS else text[:MAX_NAMES_CHARS] + ", ..."
+
+
+def _visible(tool: CodieTool, arguments: dict[str, Any]) -> dict[str, Any]:
+    """`arguments` without the parameters this Tool hides."""
+    return {key: value for key, value in arguments.items() if key not in tool.hidden}
+
+
+def failure_data(message: str) -> dict[str, Any]:
+    """The result data that goes with a `failed` or `needs_clarification` status."""
+    return {"success": False, "error": message[:MAX_ERROR_CHARS]}
+
+
+def _shape_result(raw: Any) -> dict[str, Any]:
+    """Reduce an Assist result to the stable shape of `_ASSIST_RESULT_SCHEMA`.
+
+    Older Home Assistant returns a dict. 2026.11 returns a `ToolResult` whose `data` is that
+    dict, with `error` set when the tool failed.
+    """
+    failed = False
+    if not isinstance(raw, dict):
+        failed = bool(getattr(raw, "error", False))
+        raw = raw.data
+    if "response_type" in raw:
+        return _shape_intent_response(raw)
+    if failed or not raw.get("success", "error" not in raw):
+        raise ToolError(ERROR_ASSIST_FAILED, str(raw.get("error") or "Home Assistant failed"))
+    data: dict[str, Any] = {"success": True}
+    for key in ("result", "items"):
+        if key in raw:
+            value = raw[key]
+            text = value if isinstance(value, str) else json.dumps(value, ensure_ascii=False)
+            data["result"] = _truncate(text, MAX_RESULT_BYTES)
+            break
     return data
+
+
+def _shape_intent_response(raw: dict[str, Any]) -> dict[str, Any]:
+    """Reduce an intent response (what the Hass* tools return) to the stable shape."""
+    speech = ((raw.get("speech") or {}).get("plain") or {}).get("speech") or ""
+    details = raw.get("data") or {}
+    done = [t["name"] for t in details.get("success", []) if t.get("name")]
+    failed = [t["name"] for t in details.get("failed", []) if t.get("name")]
+    if raw["response_type"] == "error":
+        raise ToolError(
+            str(details.get("code") or ERROR_ASSIST_FAILED),
+            speech or "Home Assistant could not do that",
+        )
+    text = speech or (f"Done: {', '.join(done)}" if done else "Done")
+    if failed:
+        text += f" (failed: {', '.join(failed)})"
+    return {"success": True, "result": _truncate(text, MAX_RESULT_BYTES)}
 
 
 def _truncate(text: str, max_bytes: int) -> str:

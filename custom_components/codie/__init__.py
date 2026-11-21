@@ -62,7 +62,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: CodieConfigEntry) -> boo
     integration_id: str = entry.data[CONF_INTEGRATION_ID]
 
     try:
-        await async_register_catalog(client, integration_id)
+        await async_register_catalog(hass, client, integration_id)
     except CodieError as err:
         raise ConfigEntryNotReady(f"Cannot register tools on the Codie: {err}") from err
 
