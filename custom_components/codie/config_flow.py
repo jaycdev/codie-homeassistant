@@ -4,10 +4,16 @@ from __future__ import annotations
 
 import logging
 import uuid
+from collections.abc import Mapping
 from typing import Any
 
 import voluptuous as vol
-from homeassistant.config_entries import ConfigFlow, ConfigFlowResult
+from homeassistant.config_entries import (
+    SOURCE_REAUTH,
+    ConfigEntry,
+    ConfigFlow,
+    ConfigFlowResult,
+)
 from homeassistant.const import CONF_HOST, CONF_PORT
 from homeassistant.core import callback
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
@@ -65,33 +71,64 @@ class CodieConfigFlow(ConfigFlow, domain=DOMAIN):
         if user_input is not None:
             self._host = user_input[CONF_HOST].strip()
             self._port = user_input[CONF_PORT]
-            self._client = CodieClient(async_get_clientsession(self.hass), self._host, self._port)
-            try:
-                await self._client.async_ping()
-                bootstrap = await self._client.async_bootstrap()
-                if not (bootstrap.device_logged_in and bootstrap.user_id):
-                    return self.async_abort(reason="not_signed_in")
-                challenge = await self._client.async_pair_request()
-            except CodieConnectionError:
-                errors["base"] = "cannot_connect"
-            except CodieApiError as err:
-                if err.code == "DEVICE_NOT_LOGGED_IN":
-                    return self.async_abort(reason="not_signed_in")
-                _LOGGER.warning("Codie refused the pairing request: %s", err)
-                errors["base"] = "unknown"
-            except CodieError as err:
-                _LOGGER.warning("Unexpected reply while starting pairing: %s", err)
-                errors["base"] = "unknown"
-            else:
-                self._user_id = bootstrap.user_id
-                self._challenge_id = challenge.challenge_id
-                return await self.async_step_pair()
+            result, error = await self._async_start_pairing()
+            if result is not None:
+                return result
+            assert error is not None
+            errors["base"] = error
 
         return self.async_show_form(
             step_id="user",
             data_schema=self.add_suggested_values_to_schema(STEP_USER_SCHEMA, user_input),
             errors=errors,
         )
+
+    async def async_step_reauth(self, entry_data: Mapping[str, Any]) -> ConfigFlowResult:
+        """The stored credentials stopped working; pair again with the same Codie."""
+        self._host = entry_data[CONF_HOST]
+        self._port = entry_data[CONF_PORT]
+        return await self.async_step_reauth_confirm()
+
+    async def async_step_reauth_confirm(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Explain, then make the Codie display a code."""
+        errors: dict[str, str] = {}
+        if user_input is not None:
+            result, error = await self._async_start_pairing()
+            if result is not None:
+                return result
+            assert error is not None
+            errors["base"] = error
+
+        return self.async_show_form(
+            step_id="reauth_confirm",
+            description_placeholders={"host": self._host},
+            errors=errors,
+        )
+
+    async def _async_start_pairing(self) -> tuple[ConfigFlowResult | None, str | None]:
+        """Make the Codie display a code. Returns the next step or abort, else an error key."""
+        self._client = CodieClient(async_get_clientsession(self.hass), self._host, self._port)
+        try:
+            await self._client.async_ping()
+            bootstrap = await self._client.async_bootstrap()
+            if not (bootstrap.device_logged_in and bootstrap.user_id):
+                return self.async_abort(reason="not_signed_in"), None
+            challenge = await self._client.async_pair_request()
+        except CodieConnectionError:
+            return None, "cannot_connect"
+        except CodieApiError as err:
+            if err.code == "DEVICE_NOT_LOGGED_IN":
+                return self.async_abort(reason="not_signed_in"), None
+            _LOGGER.warning("Codie refused the pairing request: %s", err)
+            return None, "unknown"
+        except CodieError as err:
+            _LOGGER.warning("Unexpected reply while starting pairing: %s", err)
+            return None, "unknown"
+        self._user_id = bootstrap.user_id
+        self._challenge_id = challenge.challenge_id
+        return await self.async_step_pair(), None
 
     async def async_step_pair(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
         """Check the code the user read off the Codie."""
@@ -143,17 +180,25 @@ class CodieConfigFlow(ConfigFlow, domain=DOMAIN):
             return self.async_abort(reason="unknown")
 
         await self.async_set_unique_id(machine_id)
-        self._abort_if_unique_id_configured()
-
         data = {
             CONF_HOST: self._host,
             CONF_PORT: self._port,
             CONF_LOCAL_SECRET: local_secret,
             CONF_USER_ID: self._user_id,
-            CONF_INTEGRATION_ID: str(uuid.uuid4()),
         }
         if local_session_id:
             data[CONF_LOCAL_SESSION_ID] = local_session_id
+
+        if self.source == SOURCE_REAUTH:
+            entry: ConfigEntry[Any] = self._get_reauth_entry()
+            self._abort_if_unique_id_mismatch(reason="wrong_device")
+            # Replace the credentials but keep the integration_id, so the Codie's
+            # registration is reused.
+            data[CONF_INTEGRATION_ID] = entry.data[CONF_INTEGRATION_ID]
+            return self.async_update_reload_and_abort(entry, data=data)
+
+        self._abort_if_unique_id_configured()
+        data[CONF_INTEGRATION_ID] = str(uuid.uuid4())
         return self.async_create_entry(title=f"Codie ({self._host})", data=data)
 
     async def _async_cancel_challenge(self) -> None:

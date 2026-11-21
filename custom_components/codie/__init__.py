@@ -10,12 +10,12 @@ from typing import Any
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_HOST, CONF_PORT, EVENT_COMPONENT_LOADED, Platform
 from homeassistant.core import HomeAssistant
-from homeassistant.exceptions import ConfigEntryError, ConfigEntryNotReady
+from homeassistant.exceptions import ConfigEntryAuthFailed, ConfigEntryError, ConfigEntryNotReady
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.debounce import Debouncer
 
-from .api import CodieClient, CodieCredentials, CodieError
+from .api import CodieAuthError, CodieClient, CodieCredentials, CodieError
 from .const import (
     CONF_INTEGRATION_ID,
     CONF_LOCAL_SECRET,
@@ -68,10 +68,17 @@ async def async_setup_entry(hass: HomeAssistant, entry: CodieConfigEntry) -> boo
     registrar = CatalogRegistrar(hass, client, integration_id)
     try:
         await registrar.async_register()
+    except CodieAuthError as err:
+        raise ConfigEntryAuthFailed(f"The Codie rejected our credentials: {err}") from err
     except CodieError as err:
         raise ConfigEntryNotReady(f"Cannot register tools on the Codie: {err}") from err
 
-    executor = CodieExecutor(client, integration_id, partial(async_call_tool, hass))
+    executor = CodieExecutor(
+        client,
+        integration_id,
+        partial(async_call_tool, hass),
+        on_auth_failed=lambda: entry.async_start_reauth(hass),
+    )
     entry.runtime_data = CodieRuntimeData(client=client, executor=executor)
 
     dr.async_get(hass).async_get_or_create(
@@ -89,6 +96,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: CodieConfigEntry) -> boo
             if await registrar.async_refresh():
                 _LOGGER.info("The available Assist tools changed; reconnecting the executor")
                 await executor.async_reconnect()
+        except CodieAuthError:
+            entry.async_start_reauth(hass)
         except CodieError as err:
             # The next loaded component tries again.
             _LOGGER.warning("Could not refresh the tools on the Codie: %s", err)

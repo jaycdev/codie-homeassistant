@@ -12,7 +12,7 @@ from typing import Any
 
 from aiohttp import ClientError, ClientWebSocketResponse, WSMsgType
 
-from .api import CodieClient, CodieError
+from .api import CodieAuthError, CodieClient, CodieError
 from .errors import ToolError
 from .tools import DEFAULT_TIMEOUT_MS, failure_data
 
@@ -34,8 +34,15 @@ ToolHandler = Callable[[str, dict[str, Any]], Awaitable[dict[str, Any]]]
 class CodieExecutor:
     """Holds one executor connection, keeps it alive, and tracks whether it is `ready`."""
 
-    def __init__(self, client: CodieClient, integration_id: str, handler: ToolHandler) -> None:
+    def __init__(
+        self,
+        client: CodieClient,
+        integration_id: str,
+        handler: ToolHandler,
+        on_auth_failed: Callable[[], None] | None = None,
+    ) -> None:
         self._client = client
+        self._on_auth_failed = on_auth_failed
         self._integration_id = integration_id
         self._handler = handler
         self._ws: ClientWebSocketResponse | None = None
@@ -62,6 +69,12 @@ class CodieExecutor:
             self._was_ready = False
             try:
                 await self._serve()
+            except CodieAuthError as err:
+                # Reconnecting with credentials the Codie rejects cannot work; reauth takes over.
+                _LOGGER.warning("The Codie no longer accepts our credentials: %s", err)
+                if self._on_auth_failed is not None:
+                    self._on_auth_failed()
+                return
             except (CodieError, ClientError, OSError, TimeoutError, TypeError, ValueError) as err:
                 # Warn once per outage; a Codie that is off for days must not flood the log.
                 log = _LOGGER.warning if failures == 0 else _LOGGER.debug

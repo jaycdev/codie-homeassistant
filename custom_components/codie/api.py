@@ -5,13 +5,22 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import logging
 import time
 import uuid
 from dataclasses import dataclass
 from typing import Any
 
-from aiohttp import ClientError, ClientSession, ClientTimeout, ClientWebSocketResponse
+from aiohttp import (
+    ClientError,
+    ClientSession,
+    ClientTimeout,
+    ClientWebSocketResponse,
+    WSServerHandshakeError,
+)
 from yarl import URL
+
+_LOGGER = logging.getLogger(__name__)
 
 API_PREFIX = "/v1/api"
 WS_PREFIX = "/v1/ws"
@@ -28,6 +37,13 @@ _WS_QUERY_HEADERS = {
     "user_id": "X-Local-User-Id",
     "session_id": "X-Local-Session-Id",
 }
+
+# 401 codes meaning the stored credentials no longer work, so Pairing has to run again.
+REAUTH_CODES = frozenset(
+    {"LOCAL_USER_MISMATCH", "LOCAL_SECRET_MISMATCH", "INVALID_SIGNATURE", "LOCAL_SESSION_EXPIRED"}
+)
+# The request's timestamp is too far from the Codie's clock; new credentials would not help.
+CLOCK_SKEW_CODE = "REQUEST_EXPIRED"
 
 PAYLOAD_EMPTY = "empty"
 PAYLOAD_JSON = "json"
@@ -53,6 +69,10 @@ class CodieApiError(CodieError):
         self.status = status
         self.code = code
         self.message = message
+
+
+class CodieAuthError(CodieApiError):
+    """The Codie no longer accepts our credentials; Pairing has to run again."""
 
 
 @dataclass(frozen=True)
@@ -109,6 +129,8 @@ class CodieClient:
         self._host = host
         self._port = port
         self._credentials = credentials
+        # Warn about clock skew once per outage, not on every retry.
+        self._clock_skew_warned = False
 
     # --- public endpoints ----------------------------------------------------------------
 
@@ -206,6 +228,11 @@ class CodieClient:
         url = URL.build(scheme="ws", host=self._host, port=self._port, path=path, query=query)
         try:
             return await self._session.ws_connect(url, heartbeat=EXECUTOR_HEARTBEAT_S)
+        except WSServerHandshakeError as err:
+            if err.status == 401:
+                # The handshake carries no error body; a signed request shows why it failed.
+                await self.async_get_system()
+            raise CodieConnectionError(f"The Codie refused the executor: {err.status}") from err
         except (ClientError, TimeoutError) as err:
             raise CodieConnectionError(f"Cannot reach the Codie at {self._host}") from err
 
@@ -253,7 +280,19 @@ class CodieClient:
 
         if status >= 400:
             info = parsed if isinstance(parsed, dict) else {}
-            raise CodieApiError(status, info.get("code"), info.get("message"))
+            code = info.get("code")
+            if status == 401 and signed:
+                if code in REAUTH_CODES:
+                    raise CodieAuthError(status, code, info.get("message"))
+                if code == CLOCK_SKEW_CODE and not self._clock_skew_warned:
+                    self._clock_skew_warned = True
+                    _LOGGER.warning(
+                        "The Codie rejected a request as expired. The clock of Home Assistant "
+                        "and the Codie differ too much; check the time on both"
+                    )
+            raise CodieApiError(status, code, info.get("message"))
+        if signed:
+            self._clock_skew_warned = False
         if not raw.strip():
             return None
         if not isinstance(parsed, dict):

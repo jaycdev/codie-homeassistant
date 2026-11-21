@@ -119,6 +119,8 @@ class FakeCodie:
     invocation_ids: list[str] = field(default_factory=list)
     # Turn executor handshakes away, as when the Codie is restarting.
     refuse_executor: bool = False
+    # Answer every signed request with this 401 code, whatever its signature.
+    auth_error: str | None = None
     _executor: web.WebSocketResponse | None = None
     _result_waiters: dict[str, asyncio.Future[dict[str, Any]]] = field(default_factory=dict)
     _server: TestServer | None = None
@@ -291,7 +293,7 @@ class FakeCodie:
         )
         self.requests.append(recorded)
         if request.path not in PUBLIC_PATHS:
-            error = self._verify(request, body)
+            error = self.auth_error or self._verify(request, body)
             if error:
                 recorded.rejected_with = error
                 return _error(401, error)

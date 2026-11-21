@@ -13,6 +13,10 @@
           "port": "The port of the Codie's local API. Leave at 8081 unless you changed it."
         }
       },
+      "reauth_confirm": {
+        "title": "Pair with your Codie again",
+        "description": "Home Assistant can no longer sign in to the Codie at {host}. This happens when another user signs in on the Codie, or its pairing was reset. Select Submit to make the Codie show a new pairing code."
+      },
       "pair": {
         "title": "Pair with your Codie",
         "description": "Your Codie is now showing a six-digit pairing code. Enter it below. The code is valid for 5 minutes.",
@@ -34,6 +38,8 @@
       "cannot_connect": "Could not reach the Codie. Check the host and port, and that the Codie is awake.",
       "code_expired": "The pairing code expired or was already used. Start again to get a new code.",
       "unknown": "Unexpected error while pairing. See the Home Assistant log for details.",
+      "reauth_successful": "Pairing worked again. The Codie is back online.",
+      "wrong_device": "This is a different Codie from the one that was set up. Check the host, or add it as a new Codie.",
       "not_signed_in": "No user is signed in on the Codie. Sign in on the device, then try again."
     }
   },
