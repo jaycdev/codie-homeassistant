@@ -1,6 +1,6 @@
 # 05 — Executor resilience and catalog refresh
 
-Status: ready-for-agent
+Status: done
 Type: task
 Blocked by: 03
 
@@ -18,8 +18,8 @@ Keep Tools available over days of uptime.
 
 ## Acceptance criteria
 
-- [ ] Tests: the fake Codie drops the socket and the client reconnects. A slow Home Assistant call yields a timely `failed`. Three concurrent invokes all get results.
-- [ ] Changing which Assist tools are available triggers a re-registration with the correct `expected_revision`.
-- [ ] The binary sensor goes off while the client is reconnecting and back on once `ready` returns.
+- [x] Tests: the fake Codie drops the socket and the client reconnects. A slow Home Assistant call yields a timely `failed`. Three concurrent invokes all get results.
+- [x] Changing which Assist tools are available triggers a re-registration with the correct `expected_revision`.
+- [x] The binary sensor goes off while the client is reconnecting and back on once `ready` returns.
 
 ## Comments

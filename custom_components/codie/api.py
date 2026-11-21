@@ -16,6 +16,8 @@ from yarl import URL
 API_PREFIX = "/v1/api"
 WS_PREFIX = "/v1/ws"
 REQUEST_TIMEOUT = ClientTimeout(total=10)
+# The Codie pings every 20 s; sending our own at that rate also notices a silently dead link.
+EXECUTOR_HEARTBEAT_S = 20
 
 _WS_QUERY_HEADERS = {
     "sig": "X-Local-Sig",
@@ -203,7 +205,7 @@ class CodieClient:
         }
         url = URL.build(scheme="ws", host=self._host, port=self._port, path=path, query=query)
         try:
-            return await self._session.ws_connect(url, heartbeat=30)
+            return await self._session.ws_connect(url, heartbeat=EXECUTOR_HEARTBEAT_S)
         except (ClientError, TimeoutError) as err:
             raise CodieConnectionError(f"Cannot reach the Codie at {self._host}") from err
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import logging
@@ -222,8 +223,8 @@ async def build_catalog(hass: HomeAssistant, expected_revision: int) -> dict[str
 
 async def async_register_catalog(
     hass: HomeAssistant, client: CodieClient, integration_id: str
-) -> int:
-    """Create or update the catalog and return its new revision.
+) -> list[dict[str, Any]]:
+    """Create or update the catalog and return the Tools it now holds.
 
     On a revision conflict the current revision is read again and the PUT retried.
     """
@@ -232,16 +233,44 @@ async def async_register_catalog(
         attempt += 1
         current = await client.async_get_tool_integration(integration_id)
         revision = int(current["revision"]) if current else 0
+        catalog = await build_catalog(hass, revision)
         try:
-            result = await client.async_put_tool_integration(
-                integration_id, await build_catalog(hass, revision)
-            )
+            await client.async_put_tool_integration(integration_id, catalog)
         except CodieApiError as err:
             if err.status != 409 or attempt >= REGISTER_ATTEMPTS:
                 raise
             _LOGGER.debug("Catalog revision conflict, re-reading (attempt %s)", attempt)
             continue
-        return int(result["revision"])
+        tools: list[dict[str, Any]] = catalog["tools"]
+        return tools
+
+
+class CatalogRegistrar:
+    """Keeps the Codie's catalog in step with the Assist tools Home Assistant has."""
+
+    def __init__(self, hass: HomeAssistant, client: CodieClient, integration_id: str) -> None:
+        self._hass = hass
+        self._client = client
+        self._integration_id = integration_id
+        self._tools: list[dict[str, Any]] = []
+        self._lock = asyncio.Lock()
+
+    async def async_register(self) -> None:
+        """Register the catalog unconditionally."""
+        async with self._lock:
+            self._tools = await async_register_catalog(
+                self._hass, self._client, self._integration_id
+            )
+
+    async def async_refresh(self) -> bool:
+        """Register again if the available Tools changed. Returns whether it did."""
+        async with self._lock:
+            if (await build_catalog(self._hass, 0))["tools"] == self._tools:
+                return False
+            self._tools = await async_register_catalog(
+                self._hass, self._client, self._integration_id
+            )
+            return True
 
 
 async def async_call_tool(

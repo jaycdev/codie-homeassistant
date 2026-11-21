@@ -116,6 +116,9 @@ class FakeCodie:
     # Executor WebSocket state.
     executor_connects: int = 0
     executor_results: list[dict[str, Any]] = field(default_factory=list)
+    invocation_ids: list[str] = field(default_factory=list)
+    # Turn executor handshakes away, as when the Codie is restarting.
+    refuse_executor: bool = False
     _executor: web.WebSocketResponse | None = None
     _result_waiters: dict[str, asyncio.Future[dict[str, Any]]] = field(default_factory=dict)
     _server: TestServer | None = None
@@ -181,6 +184,7 @@ class FakeCodie:
         invocation_id = str(uuid.uuid4())
         future: asyncio.Future[dict[str, Any]] = asyncio.get_running_loop().create_future()
         self._result_waiters[invocation_id] = future
+        self.invocation_ids.append(invocation_id)
         now_ms = int(self.clock() * 1000)
         await self._executor.send_json(
             {
@@ -203,6 +207,11 @@ class FakeCodie:
         )
         async with asyncio.timeout(5):
             return await future
+
+    async def send_executor_error(self, code: str, **data: Any) -> None:
+        """Send a protocol `error` message to the connected executor."""
+        assert self._executor is not None
+        await self._executor.send_json({"type": "error", "data": {"code": code, **data}})
 
     async def drop_executor(self) -> None:
         """Close the executor socket from the Codie's side."""
@@ -419,6 +428,8 @@ class FakeCodie:
         entry = self.tool_integrations.get(integration_id)
         if entry is None:
             return _error(404, "NOT_FOUND")
+        if self.refuse_executor:
+            return _error(503, "UNAVAILABLE")
         ws = web.WebSocketResponse()
         await ws.prepare(request)
         self._executor = ws
