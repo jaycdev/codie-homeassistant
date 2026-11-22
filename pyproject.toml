@@ -19,5 +19,5 @@ strict = true
 files = ["custom_components", "tests"]
 
 [[tool.mypy.overrides]]
-module = ["pytest_homeassistant.*", "voluptuous_openapi"]
+module = ["pytest_homeassistant.*"]
 ignore_missing_imports = true

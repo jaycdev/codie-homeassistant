@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import patch
 
@@ -11,8 +12,9 @@ import probatio
 import pytest
 from homeassistant.components.homeassistant.exposed_entities import async_expose_entity
 from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import entity_registry as er
-from homeassistant.helpers import intent, llm
+from homeassistant.helpers import intent, llm, selector
 from homeassistant.setup import async_setup_component
 from pytest_homeassistant.common import async_mock_service
 
@@ -339,7 +341,10 @@ async def test_prefixed_tools_and_tool_result_objects_from_2026_11(
 ) -> None:
     await setup_assist(hass)
     live = FakeLiveContext()
-    with patch("custom_components.codie.tools._assist_api_tools", return_value=[live]):
+    with patch(
+        "custom_components.codie.tools._assist_api_tools",
+        return_value=([live], llm.selector_serializer),
+    ):
         await setup(hass, fake_codie)
         await wait_connected(hass, fake_codie, True)
         result = await fake_codie.invoke(INTEGRATION_ID, "get_home_state", {"area": "study"})
@@ -352,13 +357,73 @@ async def test_prefixed_tools_and_tool_result_objects_from_2026_11(
     assert live.seen.tool_args == {"area": "study"}
 
 
+class SelectorLiveContext(FakeLiveContext):
+    """A tool whose parameters are Home Assistant selectors, which probatio cannot render."""
+
+    parameters = probatio.Schema(
+        {
+            probatio.Optional("rgb"): selector.ColorRGBSelector(),
+            probatio.Optional("level"): selector.NumberSelector({"min": 0, "max": 10}),
+        }
+    )
+
+
+def codie_serializer(schema: Any) -> Any:
+    """Renders an RGB selector its own way and leaves the rest to Home Assistant's."""
+    if isinstance(schema, selector.ColorRGBSelector):
+        return {"type": "string", "description": "hex colour"}
+    return llm.selector_serializer(schema)
+
+
+STANDARD_RGB = {"type": "array", "items": {"type": "number"}, "minItems": 3, "maxItems": 3}
+CUSTOM_RGB = {"type": "string", "description": "hex colour"}
+
+
+@pytest.mark.parametrize(
+    ("api", "rgb"),
+    [
+        ("with_serializer", CUSTOM_RGB),
+        ("without_serializer", STANDARD_RGB),
+        ("unreadable", STANDARD_RGB),
+    ],
+)
+async def test_selector_parameters_are_rendered_whether_or_not_the_assist_api_is_readable(
+    hass: HomeAssistant, fake_codie: FakeCodie, api: str, rgb: dict[str, Any]
+) -> None:
+    await setup_assist(hass)
+    tool = SelectorLiveContext()
+    serializer = codie_serializer if api == "with_serializer" else None
+    instance = SimpleNamespace(tools=[tool], custom_serializer=serializer)
+    get_api = (
+        patch("custom_components.codie.tools.llm.async_get_api", side_effect=HomeAssistantError)
+        if api == "unreadable"
+        else patch("custom_components.codie.tools.llm.async_get_api", return_value=instance)
+    )
+    with (
+        get_api,
+        patch("custom_components.codie.tools._fallback_tool", return_value=tool),
+    ):
+        await setup(hass, fake_codie)
+
+    parameters = next(t for t in registered_tools(fake_codie) if t["name"] == "get_home_state")[
+        "parameters"
+    ]
+    assert parameters["properties"] == {
+        "rgb": rgb,
+        "level": {"type": "number", "minimum": 0, "maximum": 10},
+    }
+
+
 async def test_tool_result_errors_become_failed_calls(
     hass: HomeAssistant, fake_codie: FakeCodie
 ) -> None:
     await setup_assist(hass)
     live = FakeLiveContext()
     live.reply = FakeToolResult({"error": "No exposed entities matched name 'x'"}, error=True)
-    with patch("custom_components.codie.tools._assist_api_tools", return_value=[live]):
+    with patch(
+        "custom_components.codie.tools._assist_api_tools",
+        return_value=([live], llm.selector_serializer),
+    ):
         await setup(hass, fake_codie)
         await wait_connected(hass, fake_codie, True)
         result = await fake_codie.invoke(INTEGRATION_ID, "get_home_state", {"name": "x"})

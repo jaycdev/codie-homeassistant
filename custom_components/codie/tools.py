@@ -6,6 +6,7 @@ import asyncio
 import hashlib
 import json
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
@@ -21,7 +22,7 @@ from homeassistant.helpers.importlib import async_import_module
 
 from .api import CodieApiError, CodieClient
 from .errors import ToolError, ToolNeedsClarification
-from .schema import SchemaLimitError, from_voluptuous
+from .schema import SchemaLimitError, from_probatio
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -138,13 +139,20 @@ def _llm_context(language: str | None = None) -> llm.LLMContext:
     )
 
 
-async def _assist_api_tools(hass: HomeAssistant, language: str | None = None) -> list[llm.Tool]:
+async def _assist_api_tools(
+    hass: HomeAssistant, language: str | None = None
+) -> tuple[list[llm.Tool], Callable[[Any], Any]]:
+    """The Assist API's tools and the serializer for their schemas.
+
+    The serializer is Home Assistant's selector one unless the API names its own, so a Tool's
+    schema does not depend on whether the Assist API could be read.
+    """
     try:
         api = await llm.async_get_api(hass, llm.LLM_API_ASSIST, _llm_context(language))
     except HomeAssistantError as err:
         _LOGGER.debug("Cannot read the Assist API: %s", err)
-        return []
-    return list(api.tools)
+        return [], llm.selector_serializer
+    return list(api.tools), api.custom_serializer or llm.selector_serializer
 
 
 def find_api_tool(tools: list[llm.Tool], assist_name: str) -> llm.Tool | None:
@@ -188,7 +196,7 @@ def _version(definition: dict[str, Any]) -> str:
 
 async def build_catalog(hass: HomeAssistant, expected_revision: int) -> dict[str, Any]:
     """The body for `PUT /data/user/tool-integrations/{id}`."""
-    api_tools = await _assist_api_tools(hass)
+    api_tools, serializer = await _assist_api_tools(hass)
     tools: list[dict[str, Any]] = []
     for tool in TOOLS:
         if (assist_tool := await _assist_tool(hass, tool.assist_name, api_tools)) is None:
@@ -198,7 +206,7 @@ async def build_catalog(hass: HomeAssistant, expected_revision: int) -> dict[str
             continue
         description, parameters = assist_tool.description or "", assist_tool.parameters
         try:
-            schema = from_voluptuous(parameters)
+            schema = from_probatio(parameters, serializer)
             for name in tool.hidden:
                 schema["properties"].pop(name, None)
         except SchemaLimitError as err:
@@ -285,7 +293,7 @@ async def async_call_tool(
         raise ToolError(ERROR_UNKNOWN_TOOL, f"No tool named {name}")
     context = _llm_context(language)
     try:
-        api_tools = await _assist_api_tools(hass, language)
+        api_tools, _ = await _assist_api_tools(hass, language)
         assist_tool = await _assist_tool(hass, tool.assist_name, api_tools)
         if assist_tool is None or (
             tool.assist_name in _API_NAMES and find_api_tool(api_tools, tool.assist_name) is None

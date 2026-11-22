@@ -58,7 +58,7 @@ Each Tool wraps one of Home Assistant's Assist LLM API tools (`llm.LLM_API_ASSIS
 Rules:
 - If an Assist tool is missing in the running Home Assistant version, leave its Tool out and don't substitute another. Re-register the catalog when the set changes, for example after a Home Assistant upgrade or an integration loading.
 - `confirmation_required: false` on every Tool. The Expose list is the only safety control (ADR-0002). The README warns not to expose locks, alarms or garage doors unless the user accepts the Character operating them unprompted.
-- Parameter schemas are converted from the Assist tool's voluptuous schema into the Codie's restricted JSON Schema: object root, no `$ref`, unions or patterns, depth ≤ 6, ≤ 64 properties, ≤ 8 KiB. A union (for example an `Any` of a string or a list) collapses to its simplest usable branch. Each Tool gets a `result_schema` with a stable, small shape (≤ 16 KiB of data).
+- Parameter schemas are converted from the Assist tool's probatio schema into the Codie's restricted JSON Schema: object root, no `$ref`, unions or patterns, depth ≤ 6, ≤ 64 properties, ≤ 8 KiB. A union (for example an `Any` of a string or a list) collapses to its simplest usable branch. Each Tool gets a `result_schema` with a stable, small shape (≤ 16 KiB of data).
 - `timeout_ms` defaults to 10000 and must not exceed 20000. If the Home Assistant call misses the deadline, return `failed` before `deadline_unix_ms`.
 - Descriptions are the Assist descriptions, kept short. `get_home_state`'s description tells the model to call it when it's unsure of a device name or state.
 - Exposed scripts are not Tools in v1.
