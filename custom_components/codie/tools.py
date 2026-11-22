@@ -76,6 +76,8 @@ class CodieTool:
     # Parameters the Character is not offered and whose values are dropped. A guessed filter
     # such as device_class silently excludes the very entity the user named.
     hidden: tuple[str, ...] = ()
+    # Replaces the generic message when Assist does not offer this Tool.
+    unavailable: str | None = None
 
 
 TOOLS: tuple[CodieTool, ...] = (
@@ -103,7 +105,12 @@ TOOLS: tuple[CodieTool, ...] = (
     CodieTool("media_search_play", "HassMediaSearchAndPlay", "reversible"),
     CodieTool("vacuum_start", "HassVacuumStart", "reversible"),
     CodieTool("list_add_item", "HassListAddItem", "reversible"),
-    CodieTool("todo_get_items", ASSIST_TODO_GET_ITEMS, "read"),
+    CodieTool(
+        "todo_get_items",
+        ASSIST_TODO_GET_ITEMS,
+        "read",
+        unavailable="No to-do list is exposed to Assist",
+    ),
 )
 
 
@@ -300,7 +307,8 @@ async def async_call_tool(
         ):
             raise ToolError(
                 ERROR_TOOL_UNAVAILABLE,
-                f"{tool.assist_name} is not available; no exposed entity supports it",
+                tool.unavailable
+                or f"{tool.assist_name} is not available; no exposed entity supports it",
             )
         raw = await assist_tool.async_call(
             hass, llm.ToolInput(assist_tool.name, _visible(tool, arguments)), context

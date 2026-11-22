@@ -237,6 +237,37 @@ async def test_other_assist_tools_are_never_offered_or_callable(
     assert {t["name"] for t in registered_tools(fake_codie)} <= ALL_TOOLS
 
 
+@pytest.mark.parametrize("list_exists", [False, True])
+async def test_todo_get_items_says_when_no_to_do_list_is_exposed(
+    hass: HomeAssistant, fake_codie: FakeCodie, list_exists: bool
+) -> None:
+    await setup_assist(hass)
+    add_entity(hass, "light", "kitchen_lamp", True)
+    if list_exists:
+        add_entity(hass, "todo", "Shopping", False)
+    await setup(hass, fake_codie)
+    await wait_connected(hass, fake_codie, True)
+
+    result = await fake_codie.invoke(INTEGRATION_ID, "todo_get_items", {"todo_list": "Shopping"})
+
+    assert result["code"] == "tool_unavailable"
+    assert result["message"] == "No to-do list is exposed to Assist"
+
+
+async def test_other_unavailable_tools_get_the_generic_message(
+    hass: HomeAssistant, fake_codie: FakeCodie
+) -> None:
+    await setup_assist(hass)
+    intent.async_remove(hass, "HassVacuumStart")
+    await setup(hass, fake_codie)
+    await wait_connected(hass, fake_codie, True)
+
+    result = await fake_codie.invoke(INTEGRATION_ID, "vacuum_start", {"name": "robot"})
+
+    assert result["code"] == "tool_unavailable"
+    assert result["message"] == "HassVacuumStart is not available; no exposed entity supports it"
+
+
 def test_intent_responses_are_reduced_to_the_stable_shape() -> None:
     from custom_components.codie.tools import _shape_result
 
