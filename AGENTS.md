@@ -2,7 +2,7 @@
 
 ### Issue tracker
 
-Issues and specs are local markdown files under `.scratch/<feature>/`. See `docs/agents/issue-tracker.md`.
+Issues and specs are GitHub Issues on `jaycdev/codie-homeassistant`, managed with `gh`. See `docs/agents/issue-tracker.md`.
 
 ### Domain docs
 
