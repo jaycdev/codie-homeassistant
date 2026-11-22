@@ -128,6 +128,9 @@ class FakeCodie:
     # Refuse utterances with (status, code), as when the Codie is asleep or locked.
     utterance_error: tuple[int, str] | None = None
     utterances: list[dict[str, Any]] = field(default_factory=list)
+    # Queued announcements, and the status to refuse them with (503: speech service not ready).
+    agent_results: list[dict[str, Any]] = field(default_factory=list)
+    agent_result_error: tuple[int, str] | None = None
     _executor: web.WebSocketResponse | None = None
     _result_waiters: dict[str, asyncio.Future[dict[str, Any]]] = field(default_factory=dict)
     _server: TestServer | None = None
@@ -149,6 +152,7 @@ class FakeCodie:
         app.router.add_get(f"{WS_PREFIX}tool-integrations/{{integration_id}}/executor", self._ws)
         app.router.add_get(f"{API}/data/user/slot", self._slot)
         app.router.add_post(f"{API}/data/user/tts/utterances", self._utterance)
+        app.router.add_post(f"{API}/data/user/agent/results", self._agent_result)
         app.router.add_post(f"{API}/data/user/echo", self._echo)
         app.router.add_get(f"{API}/data/user/name/{{name}}", self._name)
         self._server = TestServer(app, host="127.0.0.1")
@@ -497,6 +501,17 @@ class FakeCodie:
             {"success": True, "data": {"utterance_id": str(uuid.uuid4()), "state": "queued"}},
             status=202,
         )
+
+    async def _agent_result(self, request: web.Request) -> web.Response:
+        body = await request.json()
+        if set(body) != {"text"} or not isinstance(body["text"], str):
+            return _error(400, "INVALID_REQUEST")
+        if not 1 <= len(body["text"].strip()) <= 200:
+            return _error(400, "INVALID_REQUEST")
+        if self.agent_result_error is not None:
+            return _error(*self.agent_result_error)
+        self.agent_results.append(body)
+        return web.json_response({"success": True}, status=202)
 
     async def _echo(self, request: web.Request) -> web.Response:
         """Harness-only signed POST, so tests can exercise bodies."""

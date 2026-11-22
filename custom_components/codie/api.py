@@ -208,6 +208,10 @@ class CodieClient:
             {"request_id": request_id, "slot": slot, "text": text},
         )
 
+    async def async_post_agent_result(self, text: str) -> None:
+        """Queue `text` for the Character to speak once idle, and save it to chat history."""
+        await self.async_request("POST", "/data/user/agent/results", {"text": text})
+
     async def async_get_tool_integration(self, integration_id: str) -> dict[str, Any] | None:
         """Read a registered tool integration, or None if it does not exist."""
         try:

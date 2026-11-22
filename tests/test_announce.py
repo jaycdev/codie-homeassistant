@@ -146,13 +146,61 @@ async def test_the_longest_allowed_text_is_sent(hass: HomeAssistant, fake_codie:
     assert len(fake_codie.utterances) == 1
 
 
-async def test_queue_is_not_accepted_yet(hass: HomeAssistant, fake_codie: FakeCodie) -> None:
+async def test_a_queued_announcement_is_sent_as_an_agent_result(
+    hass: HomeAssistant, fake_codie: FakeCodie
+) -> None:
+    entry = await setup(hass, fake_codie)
+
+    await announce(hass, entry, message="  Dinner is ready  ", queue=True)
+
+    assert fake_codie.agent_results == [{"text": "Dinner is ready"}]
+    assert fake_codie.utterances == []
+    assert fake_codie.requests_to("/data/user/slot") == []
+
+
+async def test_the_notify_entity_stays_immediate(
+    hass: HomeAssistant, fake_codie: FakeCodie
+) -> None:
+    await setup(hass, fake_codie)
+
+    await notify(hass, "Hello")
+
+    assert len(fake_codie.utterances) == 1
+    assert fake_codie.agent_results == []
+
+
+async def test_the_longest_queued_text_is_sent(hass: HomeAssistant, fake_codie: FakeCodie) -> None:
+    entry = await setup(hass, fake_codie)
+
+    await announce(hass, entry, message=" " + "x" * 200 + " ", queue=True)
+
+    assert len(fake_codie.agent_results) == 1
+
+
+@pytest.mark.parametrize("text", ["", "   \n", "x" * 201])
+async def test_empty_or_over_200_character_queued_text_is_rejected_not_truncated(
+    hass: HomeAssistant, fake_codie: FakeCodie, text: str
+) -> None:
     entry = await setup(hass, fake_codie)
 
     with pytest.raises(ServiceValidationError):
+        await announce(hass, entry, message=text, queue=True)
+
+    assert fake_codie.agent_results == []
+
+
+async def test_a_speech_service_that_is_not_ready_is_an_error(
+    hass: HomeAssistant, fake_codie: FakeCodie
+) -> None:
+    entry = await setup(hass, fake_codie)
+    fake_codie.agent_result_error = (503, "SPEECH_NOT_READY")
+
+    with pytest.raises(HomeAssistantError) as raised:
         await announce(hass, entry, message="Hello", queue=True)
 
-    assert fake_codie.utterances == []
+    assert not isinstance(raised.value, ServiceValidationError)
+    assert "not ready" in str(raised.value)
+    assert len(fake_codie.requests_to("/data/user/agent/results")) == 1
 
 
 async def test_an_unreachable_codie_is_an_error(hass: HomeAssistant, fake_codie: FakeCodie) -> None:

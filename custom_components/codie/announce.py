@@ -22,9 +22,12 @@ ATTR_MESSAGE = "message"
 ATTR_QUEUE = "queue"
 
 MAX_IMMEDIATE_CHARS = 16000
+MAX_QUEUED_CHARS = 200
 # The Codie answers 409 with these codes while it is asleep, locked, or otherwise unable to speak.
 BLOCKED_CODES = frozenset({"DEVICE_BLOCKED", "AMBIENT_MODE_BLOCKED"})
 SLOT_MISMATCH = "SLOT_MISMATCH"
+# The speech service is not ready, so the Codie cannot take an announcement yet.
+SERVICE_UNAVAILABLE = 503
 
 ANNOUNCE_SCHEMA = vol.Schema(
     {
@@ -41,19 +44,51 @@ def _failed(key: str, **placeholders: str) -> HomeAssistantError:
     )
 
 
+def _announce_error(err: CodieError) -> HomeAssistantError:
+    """Turn a failure of either announcement endpoint into a Home Assistant error."""
+    if isinstance(err, CodieConnectionError):
+        return _failed("announce_cannot_connect")
+    if isinstance(err, CodieAuthError):
+        return _failed("announce_auth_failed")
+    if isinstance(err, CodieApiError):
+        if err.code in BLOCKED_CODES:
+            return _failed("announce_blocked", reason=err.code or "")
+        if err.status == SERVICE_UNAVAILABLE:
+            return _failed("announce_not_ready")
+    return _failed("announce_failed", error=str(err))
+
+
+def _checked_text(message: str, max_chars: int) -> str:
+    text = message.strip()
+    if not 1 <= len(text) <= max_chars:
+        raise ServiceValidationError(
+            translation_domain=DOMAIN,
+            translation_key="announcement_length",
+            translation_placeholders={"max": str(max_chars)},
+        )
+    return text
+
+
+async def async_announce_queued(client: CodieClient, message: str) -> None:
+    """Have the Character speak `message` once idle, and remember it in its chat history.
+
+    Raises `ServiceValidationError` for text over the Codie's 200 character limit (never
+    truncated), and `HomeAssistantError` if it could not be queued.
+    """
+    text = _checked_text(message, MAX_QUEUED_CHARS)
+    try:
+        await client.async_post_agent_result(text)
+    except CodieError as err:
+        raise _announce_error(err) from err
+
+
 async def async_announce(client: CodieClient, message: str) -> None:
     """Make the Character speak `message` now, cutting off whatever it is doing.
 
     Raises `ServiceValidationError` for text the Codie would refuse, and
     `HomeAssistantError` if it could not be spoken.
     """
-    text = message.strip()
-    if not 1 <= len(text) <= MAX_IMMEDIATE_CHARS:
-        raise ServiceValidationError(
-            translation_domain=DOMAIN,
-            translation_key="announcement_length",
-            translation_placeholders={"max": str(MAX_IMMEDIATE_CHARS)},
-        )
+    text = _checked_text(message, MAX_IMMEDIATE_CHARS)
     try:
         # A switch of Slots between the read and the POST is answered with 409; read again once.
         for attempt in (1, 2):
@@ -66,26 +101,15 @@ async def async_announce(client: CodieClient, message: str) -> None:
                     continue
                 raise
             return
-    except CodieConnectionError as err:
-        raise _failed("announce_cannot_connect") from err
-    except CodieAuthError as err:
-        raise _failed("announce_auth_failed") from err
-    except CodieApiError as err:
-        if err.code in BLOCKED_CODES:
-            raise _failed("announce_blocked", reason=err.code or "") from err
-        raise _failed("announce_failed", error=str(err)) from err
     except CodieError as err:
-        raise _failed("announce_failed", error=str(err)) from err
+        raise _announce_error(err) from err
 
 
 def async_register_services(hass: HomeAssistant) -> None:
     """Register `codie.announce`."""
 
     async def handle_announce(call: ServiceCall) -> None:
-        if call.data[ATTR_QUEUE]:
-            raise ServiceValidationError(
-                translation_domain=DOMAIN, translation_key="queue_not_supported"
-            )
+        send = async_announce_queued if call.data[ATTR_QUEUE] else async_announce
         # The target picker also offers areas, floors, labels and entities; resolve them all
         # to config entries and keep the Codies among them.
         entries = [
@@ -102,6 +126,6 @@ def async_register_services(hass: HomeAssistant) -> None:
                 raise ServiceValidationError(
                     translation_domain=DOMAIN, translation_key="codie_not_loaded"
                 )
-            await async_announce(entry.runtime_data.client, call.data[ATTR_MESSAGE])
+            await send(entry.runtime_data.client, call.data[ATTR_MESSAGE])
 
     hass.services.async_register(DOMAIN, SERVICE_ANNOUNCE, handle_announce, ANNOUNCE_SCHEMA)

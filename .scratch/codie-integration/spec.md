@@ -77,7 +77,7 @@ Rules:
 - **Action `codie.announce`** (target: a Codie device; fields `message`, optional `queue` boolean):
   - `queue: false` (default): same as the `notify` entity.
   - `queue: true`: a Queued announcement through `POST /data/user/agent/results`. The Codie speaks it once the Character is idle and saves it to chat history. 1–200 characters; longer messages are rejected with a validation error.
-- Both read the current Slot from `GET /data/user/slot` before sending. On `409 SLOT_MISMATCH`, re-read the Slot once and retry.
+- The immediate path reads the current Slot from `GET /data/user/slot` before sending. On `409 SLOT_MISMATCH`, re-read the Slot once and retry. The queued path sends only `{"text": ...}` and has no Slot, so it neither reads nor retries.
 - The screen is never woken automatically. If the Codie is asleep or locked (`409 DEVICE_BLOCKED` / `AMBIENT_MODE_BLOCKED`), the action fails with an error that names the reason.
 - The action returns once the request is accepted (`202`). Waiting for playback to finish is not in v1.
 

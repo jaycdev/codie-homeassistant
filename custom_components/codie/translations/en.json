@@ -66,7 +66,7 @@
         },
         "queue": {
           "name": "Queue",
-          "description": "Not available yet. Leave off to speak the message at once, cutting off whatever the Character is doing."
+          "description": "Wait until the Character is idle, then speak the message and save it to its chat history. Up to 200 characters. Leave off to speak at once, cutting off whatever the Character is doing."
         }
       }
     }
@@ -74,9 +74,6 @@
   "exceptions": {
     "announcement_length": {
       "message": "The message must have between 1 and {max} characters."
-    },
-    "queue_not_supported": {
-      "message": "Queued announcements are not supported yet. Turn off Queue."
     },
     "codie_not_loaded": {
       "message": "That Codie is not set up or not loaded."
@@ -89,6 +86,9 @@
     },
     "announce_auth_failed": {
       "message": "The Codie no longer accepts Home Assistant. Pair it again from the integration page."
+    },
+    "announce_not_ready": {
+      "message": "The Codie's speech service is not ready yet. Try again in a moment."
     },
     "announce_failed": {
       "message": "The Codie refused the announcement: {error}"
