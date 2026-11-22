@@ -1,9 +1,12 @@
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+# Let Home Assistant install its httpx alias before respx is imported.
+addopts = "-p no:respx"
 testpaths = ["tests"]
 
 [tool.ruff]
-target-version = "py313"
+target-version = "py314"
 line-length = 100
 extend-exclude = ["tools"]
 
@@ -11,10 +14,10 @@ extend-exclude = ["tools"]
 select = ["E", "F", "I", "UP", "B", "ASYNC", "SIM", "RUF"]
 
 [tool.mypy]
-python_version = "3.13"
+python_version = "3.14"
 strict = true
 files = ["custom_components", "tests"]
 
 [[tool.mypy.overrides]]
-module = ["pytest_socket", "pytest_homeassistant_custom_component.*", "voluptuous_openapi"]
+module = ["pytest_homeassistant.*", "voluptuous_openapi"]
 ignore_missing_imports = true

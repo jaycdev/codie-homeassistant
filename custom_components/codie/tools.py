@@ -9,7 +9,7 @@ import logging
 from dataclasses import dataclass
 from typing import Any
 
-import voluptuous as vol
+import probatio
 from homeassistant.components.homeassistant.exposed_entities import async_should_expose
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
@@ -309,7 +309,7 @@ async def async_call_tool(
             f"No exposed entity or area matches that request ({reason.name if reason else '?'}). "
             f"Retry with one of these exposed names: {_exposed_names(hass)}",
         ) from err
-    except (intent.InvalidSlotInfo, vol.Invalid) as err:
+    except (intent.InvalidSlotInfo, probatio.Invalid) as err:
         raise ToolError(ERROR_INVALID_ARGUMENTS, f"Invalid arguments for {name}") from err
     except intent.IntentError as err:
         raise ToolError(

@@ -234,7 +234,7 @@ class CodieExecutor:
         # Answer on the socket the call came in on: a newer connection knows nothing of it.
         try:
             await ws.send_json({"type": "result", "data": result})
-        except (ClientError, ConnectionError):
+        except ClientError, ConnectionError:
             _LOGGER.warning(
                 "Invocation %s finished but the executor disconnected before the result was "
                 "sent; its outcome is unknown to the Codie and it will not be retried",

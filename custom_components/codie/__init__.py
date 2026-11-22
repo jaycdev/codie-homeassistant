@@ -9,7 +9,7 @@ from typing import Any
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_HOST, CONF_PORT, EVENT_COMPONENT_LOADED, Platform
-from homeassistant.core import HomeAssistant
+from homeassistant.core import Event, HomeAssistant, callback
 from homeassistant.exceptions import ConfigEntryAuthFailed, ConfigEntryError, ConfigEntryNotReady
 from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers import device_registry as dr
@@ -128,11 +128,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: CodieConfigEntry) -> boo
         hass, _LOGGER, cooldown=REFRESH_COOLDOWN_S, immediate=False, function=refresh_catalog
     )
     entry.async_on_unload(debouncer.async_shutdown)
-    entry.async_on_unload(
-        hass.bus.async_listen(
-            EVENT_COMPONENT_LOADED, lambda _event: debouncer.async_schedule_call()
-        )
-    )
+
+    # A callback, so it runs on the event loop rather than in an executor thread.
+    @callback
+    def _component_loaded(_event: Event) -> None:
+        debouncer.async_schedule_call()
+
+    entry.async_on_unload(hass.bus.async_listen(EVENT_COMPONENT_LOADED, _component_loaded))
     entry.async_on_unload(executor.async_close)
     entry.async_create_background_task(hass, executor.async_run(), "codie executor")
     return True

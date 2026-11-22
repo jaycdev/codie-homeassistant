@@ -15,7 +15,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers import llm
 from homeassistant.setup import async_setup_component
-from pytest_homeassistant_custom_component.common import MockConfigEntry
+from pytest_homeassistant.common import MockConfigEntry
 
 from custom_components.codie.const import (
     CONF_INTEGRATION_ID,
@@ -67,7 +67,12 @@ async def wait_connected(hass: HomeAssistant, fake: FakeCodie, connected: bool) 
 
 async def expose_light(hass: HomeAssistant, name: str, exposed: bool) -> None:
     assert await async_setup_component(hass, "homeassistant", {})
-    entry = er.async_get(hass).async_get_or_create("light", "test", name, suggested_object_id=name)
+    # The Assist API, and its GetLiveContext, come from the llm integration.
+    assert await async_setup_component(hass, "llm", {})
+    # Assist matches the registry name, so the entry needs one, like a real entity has.
+    entry = er.async_get(hass).async_get_or_create(
+        "light", "test", name, suggested_object_id=name, original_name=name
+    )
     hass.states.async_set(entry.entity_id, "on", {"friendly_name": name})
     async_expose_entity(hass, "conversation", entry.entity_id, exposed)
 

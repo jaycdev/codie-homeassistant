@@ -7,7 +7,7 @@ import uuid
 from collections.abc import Callable
 from functools import partial
 
-import voluptuous as vol
+import probatio
 from homeassistant.config_entries import ConfigEntryState
 from homeassistant.core import HomeAssistant, ServiceCall
 from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
@@ -31,10 +31,10 @@ SLOT_MISMATCH = "SLOT_MISMATCH"
 # The speech service is not ready, so the Codie cannot take an announcement yet.
 SERVICE_UNAVAILABLE = 503
 
-ANNOUNCE_SCHEMA = vol.Schema(
+ANNOUNCE_SCHEMA = probatio.Schema(
     {
-        vol.Required(ATTR_MESSAGE): cv.string,
-        vol.Optional(ATTR_QUEUE, default=False): cv.boolean,
+        probatio.Required(ATTR_MESSAGE): cv.string,
+        probatio.Optional(ATTR_QUEUE, default=False): cv.boolean,
         **cv.TARGET_SERVICE_FIELDS,
     }
 )

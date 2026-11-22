@@ -7,7 +7,7 @@ import uuid
 from collections.abc import Mapping
 from typing import Any
 
-import voluptuous as vol
+import probatio
 from homeassistant.config_entries import (
     SOURCE_REAUTH,
     ConfigEntry,
@@ -40,15 +40,15 @@ _LOGGER = logging.getLogger(__name__)
 # Codes `pair/confirm` answers with once the challenge can no longer succeed.
 CHALLENGE_OVER_CODES = frozenset({"PAIRING_CODE_EXPIRED", "PAIRING_CODE_USED"})
 
-STEP_USER_SCHEMA = vol.Schema(
+STEP_USER_SCHEMA = probatio.Schema(
     {
-        vol.Required(CONF_HOST): str,
-        vol.Required(CONF_PORT, default=DEFAULT_PORT): vol.All(
-            vol.Coerce(int), vol.Range(min=1, max=65535)
+        probatio.Required(CONF_HOST): str,
+        probatio.Required(CONF_PORT, default=DEFAULT_PORT): probatio.All(
+            probatio.Coerce(int), probatio.Range(min=1, max=65535)
         ),
     }
 )
-STEP_PAIR_SCHEMA = vol.Schema({vol.Required(CONF_CODE): str})
+STEP_PAIR_SCHEMA = probatio.Schema({probatio.Required(CONF_CODE): str})
 
 
 class CodieConfigFlow(ConfigFlow, domain=DOMAIN):

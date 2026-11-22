@@ -91,7 +91,7 @@ def _clocks_differ(date_header: str | None) -> bool:
         return False
     try:
         codie_time = parsedate_to_datetime(date_header).timestamp()
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         return False
     return abs(codie_time - time.time()) > CLOCK_TOLERANCE_S
 

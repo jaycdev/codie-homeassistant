@@ -11,7 +11,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
-import voluptuous as vol
+import probatio
 import voluptuous_openapi
 
 MAX_DEPTH = 6
@@ -40,7 +40,7 @@ class SchemaLimitError(ValueError):
     """A schema is outside what the Codie accepts."""
 
 
-def from_voluptuous(schema: vol.Schema) -> dict[str, Any]:
+def from_voluptuous(schema: probatio.Schema) -> dict[str, Any]:
     """Convert an Assist tool's parameter schema."""
     converted = voluptuous_openapi.convert(schema)
     result = restrict(converted)

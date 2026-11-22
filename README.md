@@ -10,7 +10,7 @@ The Character's own model on the Codie understands what you say. It calls a Tool
 ## Requirements
 
 - A Codie on software 1.6.0, on the same local network as Home Assistant, with a user signed in.
-- Home Assistant 2026.2.0 or later.
+- Home Assistant 2026.11.2 or later.
 - [HACS](https://hacs.xyz/).
 
 ## Installation

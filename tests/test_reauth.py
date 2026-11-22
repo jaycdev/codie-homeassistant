@@ -14,7 +14,7 @@ from homeassistant.config_entries import ConfigEntryState
 from homeassistant.core import HomeAssistant
 from homeassistant.data_entry_flow import FlowResultType
 from homeassistant.setup import async_setup_component
-from pytest_homeassistant_custom_component.common import MockConfigEntry
+from pytest_homeassistant.common import MockConfigEntry
 
 from custom_components.codie.const import (
     CONF_CODE,
@@ -46,8 +46,9 @@ def fast_timers() -> Generator[None]:
 
 @pytest.fixture(autouse=True)
 async def core_loaded(hass: HomeAssistant) -> None:
-    """Assist reads the Expose list from the `homeassistant` component."""
+    """Assist reads the Expose list from `homeassistant`, and its API comes from `llm`."""
     assert await async_setup_component(hass, "homeassistant", {})
+    assert await async_setup_component(hass, "llm", {})
 
 
 def reauth_flows(hass: HomeAssistant, entry: MockConfigEntry) -> list[Any]:

@@ -19,6 +19,10 @@ from custom_components.codie.executor import CodieExecutor
 from .fake_codie import FakeCodie
 from .test_tools import INTEGRATION_ID, expose_light, setup, wait_connected
 
+# aiohttp 3.14.5 re-arms the heartbeat when the Codie's reply to our close frame arrives,
+# after close() has cancelled it. Tests where we close a live socket leave that timer behind.
+CLOSES_A_LIVE_SOCKET = pytest.mark.parametrize("expected_lingering_timers", [True])
+
 
 @pytest.fixture(autouse=True)
 def fast_timers() -> Generator[None]:
@@ -32,8 +36,12 @@ def fast_timers() -> Generator[None]:
 
 @pytest.fixture(autouse=True)
 async def core_loaded(hass: HomeAssistant) -> None:
-    """Assist reads the Expose list from the `homeassistant` component, always loaded for real."""
+    """Assist reads the Expose list from `homeassistant` and its API comes from `llm`.
+
+    Both are always loaded for real.
+    """
     assert await async_setup_component(hass, "homeassistant", {})
+    assert await async_setup_component(hass, "llm", {})
 
 
 async def wait_for(condition: Callable[[], bool]) -> None:
@@ -147,6 +155,7 @@ async def test_calls_lost_at_disconnect_are_logged_and_not_retried(
     assert fake_codie.executor_results == []
 
 
+@CLOSES_A_LIVE_SOCKET
 async def test_protocol_error_without_invocation_reconnects(
     hass: HomeAssistant, fake_codie: FakeCodie, caplog: pytest.LogCaptureFixture
 ) -> None:
@@ -175,6 +184,7 @@ async def test_protocol_error_for_one_invocation_keeps_the_connection(
     assert fake_codie.executor_connects == 1
 
 
+@CLOSES_A_LIVE_SOCKET
 async def test_new_assist_tool_triggers_reregistration_and_reconnect(
     hass: HomeAssistant, fake_codie: FakeCodie
 ) -> None:

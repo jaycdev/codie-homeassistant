@@ -5,8 +5,8 @@ from __future__ import annotations
 import json
 from typing import Any
 
+import probatio
 import pytest
-import voluptuous as vol
 
 from custom_components.codie.schema import (
     MAX_DEPTH,
@@ -93,12 +93,12 @@ def test_arrays_keep_their_item_schema() -> None:
 
 
 def test_converts_a_voluptuous_schema() -> None:
-    schema = vol.Schema(
+    schema = probatio.Schema(
         {
-            vol.Required("temperature"): vol.Coerce(float),
-            vol.Optional("name"): str,
-            vol.Optional("level"): vol.All(vol.Coerce(int), vol.Range(0, 100)),
-            vol.Optional("mode"): vol.In(["a", "b"]),
+            probatio.Required("temperature"): probatio.Coerce(float),
+            probatio.Optional("name"): str,
+            probatio.Optional("level"): probatio.All(probatio.Coerce(int), probatio.Range(0, 100)),
+            probatio.Optional("mode"): probatio.In(["a", "b"]),
         }
     )
 
@@ -116,7 +116,7 @@ def test_converts_a_voluptuous_schema() -> None:
 
 
 def test_empty_schema_is_an_empty_closed_object() -> None:
-    assert from_voluptuous(vol.Schema({})) == {
+    assert from_voluptuous(probatio.Schema({})) == {
         "type": "object",
         "properties": {},
         "additionalProperties": False,

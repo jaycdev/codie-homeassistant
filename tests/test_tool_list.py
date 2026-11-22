@@ -7,14 +7,14 @@ from dataclasses import dataclass
 from typing import Any
 from unittest.mock import patch
 
+import probatio
 import pytest
-import voluptuous as vol
 from homeassistant.components.homeassistant.exposed_entities import async_expose_entity
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers import intent, llm
 from homeassistant.setup import async_setup_component
-from pytest_homeassistant_custom_component.common import async_mock_service
+from pytest_homeassistant.common import async_mock_service
 
 from custom_components.codie.schema import check_limits
 
@@ -53,9 +53,18 @@ async def setup_assist(hass: HomeAssistant) -> None:
 
 
 def add_entity(
-    hass: HomeAssistant, domain: str, name: str, exposed: bool, **attributes: Any
+    hass: HomeAssistant,
+    domain: str,
+    name: str,
+    exposed: bool,
+    unique_id: str | None = None,
+    **attributes: Any,
 ) -> str:
-    entry = er.async_get(hass).async_get_or_create(domain, "test", name, suggested_object_id=name)
+    unique_id = unique_id or name
+    # Assist matches the registry name, so the entry needs one, like a real entity has.
+    entry = er.async_get(hass).async_get_or_create(
+        domain, "test", unique_id, suggested_object_id=unique_id, original_name=name
+    )
     hass.states.async_set(entry.entity_id, "off", {"friendly_name": name, **attributes})
     async_expose_entity(hass, "conversation", entry.entity_id, exposed)
     return entry.entity_id
@@ -168,9 +177,8 @@ async def test_ambiguous_names_ask_for_clarification(
     hass: HomeAssistant, fake_codie: FakeCodie
 ) -> None:
     await setup_assist(hass)
-    for name in ("lamp_one", "lamp_two"):
-        entity_id = add_entity(hass, "light", name, True)
-        hass.states.async_set(entity_id, "off", {"friendly_name": "lamp"})
+    for unique_id in ("lamp_one", "lamp_two"):
+        add_entity(hass, "light", "lamp", True, unique_id=unique_id)
     calls = async_mock_service(hass, "light", "turn_on")
     await setup(hass, fake_codie)
     await wait_connected(hass, fake_codie, True)
@@ -312,11 +320,11 @@ class FakeLiveContext(llm.Tool):
 
     name = "homeassistant__GetLiveContext"
     description = "Provides real-time information about the CURRENT state of devices."
-    parameters = vol.Schema(
+    parameters = probatio.Schema(
         {
-            vol.Optional("name"): str,
-            vol.Optional("domain"): vol.Any(str, [str]),
-            vol.Optional("area"): str,
+            probatio.Optional("name"): str,
+            probatio.Optional("domain"): probatio.Any(str, [str]),
+            probatio.Optional("area"): str,
         }
     )
     reply = FakeToolResult({"result": "Live Context: study AC is on"})
