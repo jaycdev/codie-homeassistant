@@ -16,7 +16,7 @@ The Character's own model on the Codie understands what you say. It calls a Tool
 ## Installation
 
 1. In HACS, open the menu (⋮) and select **Custom repositories**.
-2. Add `https://github.com/jaycdev/codiehub-homeassistant` with the type **Integration**.
+2. Add `https://github.com/jaycdev/codie-homeassistant` with the type **Integration**.
 3. Search HACS for **CODE27 Codie**, select **Download**, and restart Home Assistant.
 
 ## Pairing
