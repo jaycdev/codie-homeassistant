@@ -103,6 +103,125 @@ def test_null_is_dropped_from_an_enum() -> None:
     assert restrict({"type": ["null"], "enum": [None]}) == {"type": "null"}
 
 
+def test_an_enum_keeps_only_the_values_that_match_its_type() -> None:
+    assert restrict({"type": ["integer", "string"], "enum": [1, "a"]}) == {
+        "type": "integer",
+        "enum": [1],
+    }
+    assert restrict({"type": "number", "enum": [1, 2.5, True, "a"]}) == {
+        "type": "number",
+        "enum": [1, 2.5],
+    }
+    assert restrict({"type": "integer", "enum": [1, True, 2.5]}) == {
+        "type": "integer",
+        "enum": [1],
+    }
+    assert restrict({"type": "boolean", "enum": [True, 1]}) == {"type": "boolean", "enum": [True]}
+    assert restrict({"type": "string", "enum": [1]}) == {"type": "string"}
+
+
+def test_an_untyped_enum_takes_the_type_of_its_values() -> None:
+    assert restrict({"enum": ["a", 1]}) == {"type": "string", "enum": ["a"]}
+    assert restrict({"enum": [1, "a"]}) == {"type": "integer", "enum": [1]}
+    assert restrict({"enum": [1.5, 2]}) == {"type": "number", "enum": [1.5, 2]}
+    assert restrict({"enum": [1, 2]}) == {"type": "integer", "enum": [1, 2]}
+    assert restrict({"enum": [True, 1]}) == {"type": "boolean", "enum": [True]}
+    assert restrict({"enum": [None, "a"]}) == {"type": "string", "enum": ["a"]}
+    assert restrict({"enum": [None]}) == {"type": "null"}
+    assert restrict({"enum": ["a", "b"]}) == {"type": "string", "enum": ["a", "b"]}
+    # Nothing to infer, so the last-resort string applies.
+    assert restrict({"enum": []}) == {"type": "string"}
+
+
+def test_an_enum_is_filtered_after_a_union_or_all_of_is_merged() -> None:
+    assert restrict({"anyOf": [{"enum": ["a", 1]}, {"type": "array"}]}) == {
+        "type": "string",
+        "enum": ["a"],
+    }
+    assert restrict({"anyOf": [{"type": ["integer", "string"], "enum": [1, "a"]}, {}]}) == {
+        "type": "integer",
+        "enum": [1],
+    }
+    assert restrict({"allOf": [{"enum": ["a", 1, 2]}, {"enum": [2, "a", "b"]}]}) == {
+        "type": "string",
+        "enum": ["a"],
+    }
+    assert restrict({"allOf": [{"type": "string"}, {"enum": [1, "a"]}]}) == {
+        "type": "string",
+        "enum": ["a"],
+    }
+    assert restrict(
+        {"allOf": [{"type": "integer", "exclusiveMinimum": 0}, {"enum": [1, "a"]}]}
+    ) == {"type": "integer", "minimum": 1, "enum": [1]}
+    assert restrict({"properties": {"x": {"enum": ["a", 1]}}}) == {
+        "type": "object",
+        "properties": {"x": {"type": "string", "enum": ["a"]}},
+        "additionalProperties": False,
+    }
+
+
+def test_a_union_prefers_the_branch_that_admits_the_parents_enum() -> None:
+    string_enum = {"type": "string", "enum": ["a"]}
+    branches = [{"type": "integer"}, {"type": "string"}]
+
+    assert restrict({"anyOf": branches, "enum": ["a", True]}) == string_enum
+    assert restrict({"enum": ["a"], "oneOf": branches}) == string_enum
+    # With no value any branch admits, the simplest branch still wins.
+    assert restrict({"anyOf": branches, "enum": [True]}) == {"type": "integer"}
+
+
+def test_the_all_of_enum_intersection_keeps_bools_apart_from_numbers() -> None:
+    assert restrict({"allOf": [{"type": "integer", "enum": [1, 2, 3]}, {"enum": [True, 2]}]}) == {
+        "type": "integer",
+        "enum": [2],
+    }
+    assert restrict({"allOf": [{"enum": [True, "a"]}, {"enum": [1, "a"]}]}) == {
+        "type": "string",
+        "enum": ["a"],
+    }
+    assert restrict({"allOf": [{"enum": [0]}, {"enum": [False]}]}) == {"type": "string"}
+    assert restrict({"allOf": [{"enum": [1]}, {"enum": [1.0]}]}) == {
+        "type": "integer",
+        "enum": [1],
+    }
+
+
+def test_whole_number_floats_fit_integer_as_ints() -> None:
+    assert restrict({"type": "integer", "enum": [1.0, 2.0, 2.5]}) == {
+        "type": "integer",
+        "enum": [1, 2],
+    }
+    assert restrict({"allOf": [{"type": "integer"}, {"type": "number", "enum": [1.0, 2.0]}]}) == {
+        "type": "integer",
+        "enum": [1, 2],
+    }
+    assert restrict({"enum": [1.0, 2.0]}) == {"type": "number", "enum": [1.0, 2.0]}
+    assert restrict({"enum": [1.5, 2]}) == {"type": "number", "enum": [1.5, 2]}
+
+
+def test_an_enum_is_filtered_against_the_type_properties_force() -> None:
+    assert restrict({"enum": ["a"], "properties": {"x": {"type": "string"}}}) == {
+        "type": "object",
+        "properties": {"x": {"type": "string"}},
+        "additionalProperties": False,
+    }
+
+
+def test_enums_hold_only_scalars() -> None:
+    assert restrict({"enum": [{"a": 1}]}) == {"type": "string"}
+    assert restrict({"enum": [[1, 2]]}) == {"type": "string"}
+    assert restrict({"enum": [[1], "a", {"b": 2}]}) == {"type": "string", "enum": ["a"]}
+    assert restrict({"type": "array", "enum": [[1]]}) == {"type": "array"}
+
+
+def test_an_inferred_integer_takes_part_in_the_exclusive_bound_rule() -> None:
+    assert restrict({"enum": [1, 2], "exclusiveMinimum": 1}) == {
+        "type": "integer",
+        "enum": [1, 2],
+        "minimum": 2,
+    }
+
+
 def test_integer_exclusive_bounds_become_inclusive() -> None:
     assert restrict({"type": "integer", "exclusiveMinimum": 0, "exclusiveMaximum": 10}) == {
         "type": "integer",
@@ -337,6 +456,42 @@ def test_converts_nullable_and_exclusive_probatio_validators() -> None:
         "mode": {"type": "string", "enum": ["a"]},
         "count": {"type": "integer", "minimum": 1},
         "amount": {"type": "number"},
+    }
+
+
+def test_converts_enums_that_probatio_leaves_untyped() -> None:
+    schema = probatio.Schema(
+        {
+            probatio.Optional("mixed"): probatio.In(["a", 1]),
+            probatio.Optional("numbers"): probatio.In([1.5, 2]),
+            probatio.Optional("flag"): probatio.In([True, 1]),
+            probatio.Optional("nothing"): probatio.In([None]),
+        }
+    )
+
+    assert from_probatio(schema)["properties"] == {
+        "mixed": {"type": "string", "enum": ["a"]},
+        "numbers": {"type": "number", "enum": [1.5, 2]},
+        "flag": {"type": "boolean", "enum": [True]},
+        "nothing": {"type": "null"},
+    }
+
+
+def test_converts_enums_that_combine_with_other_validators() -> None:
+    schema = probatio.Schema(
+        {
+            probatio.Optional("union"): probatio.All(
+                probatio.Any(int, str), probatio.In(["a", True])
+            ),
+            probatio.Optional("both"): probatio.All(probatio.In([1, 2, 3]), probatio.In([True, 2])),
+            probatio.Optional("whole"): probatio.All(probatio.Coerce(int), probatio.In([1.0, 2.0])),
+        }
+    )
+
+    assert from_probatio(schema)["properties"] == {
+        "union": {"type": "string", "enum": ["a"]},
+        "both": {"type": "integer", "enum": [2]},
+        "whole": {"type": "integer", "enum": [1, 2]},
     }
 
 

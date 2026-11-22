@@ -414,6 +414,37 @@ async def test_selector_parameters_are_rendered_whether_or_not_the_assist_api_is
     }
 
 
+async def test_the_fallback_todo_tool_offers_its_list_name_as_a_string(
+    hass: HomeAssistant, fake_codie: FakeCodie
+) -> None:
+    await setup_assist(hass)
+    with patch("custom_components.codie.tools.llm.async_get_api", side_effect=HomeAssistantError):
+        await setup(hass, fake_codie)
+
+    parameters = next(t for t in registered_tools(fake_codie) if t["name"] == "todo_get_items")[
+        "parameters"
+    ]
+    assert parameters["properties"]["todo_list"] == {"type": "string"}
+    assert "todo_list" in parameters["required"]
+
+
+async def test_a_typed_todo_list_is_not_overridden(
+    hass: HomeAssistant, fake_codie: FakeCodie
+) -> None:
+    from homeassistant.components.todo.llm import TodoGetItemsTool
+
+    await setup_assist(hass)
+    instance = SimpleNamespace(tools=[TodoGetItemsTool(["Shopping"])], custom_serializer=None)
+    with patch("custom_components.codie.tools.llm.async_get_api", return_value=instance):
+        await setup(hass, fake_codie)
+
+    parameters = next(t for t in registered_tools(fake_codie) if t["name"] == "todo_get_items")[
+        "parameters"
+    ]
+    assert parameters["properties"]["todo_list"] == {"type": "string", "enum": ["Shopping"]}
+    assert "todo_list" in parameters["required"]
+
+
 async def test_tool_result_errors_become_failed_calls(
     hass: HomeAssistant, fake_codie: FakeCodie
 ) -> None:

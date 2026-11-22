@@ -40,6 +40,15 @@ _FLOORS = frozenset({"minimum", "minLength", "minItems", "exclusiveMinimum"})
 _CEILINGS = frozenset({"maximum", "maxLength", "maxItems", "exclusiveMaximum"})
 # Lower is simpler: a union or type list collapses to its lowest-ranked member, first on a tie.
 _TYPE_RANK = {"string": 0, "integer": 0, "number": 0, "boolean": 0, "null": 1, "array": 2}
+# The JSON types of a scalar; bool comes before int, which it subclasses. An enum holds only
+# scalars for the Codie, so lists and dicts have no type here.
+_JSON_TYPES = (
+    (bool, "boolean"),
+    (int, "integer"),
+    (float, "number"),
+    (str, "string"),
+    (type(None), "null"),
+)
 _OPENAPI_VERSION = "3.1.0"
 
 
@@ -63,20 +72,26 @@ def restrict(schema: dict[str, Any]) -> dict[str, Any]:
     """Rewrite a JSON Schema into the supported subset."""
     schema = _normalize(_fold_all_of(schema))
     for union in _UNIONS:
-        if union in schema and (branch := _pick_branch(schema[union])) is not None:
+        if (
+            union in schema
+            and (branch := _pick_branch(schema[union], schema.get("enum"))) is not None
+        ):
             rest = {key: value for key, value in schema.items() if key != union}
             return restrict(_merge([rest, branch]))
 
     result = {key: value for key, value in schema.items() if key in _KEPT_KEYWORDS}
+    if "type" not in result and (inferred := _enum_type(result.get("enum"))):
+        result["type"] = inferred
+    if "properties" in schema:
+        result["type"] = "object"
     # A nullable enum lists null; the type has already dropped it.
-    if enum := [value for value in result.get("enum", []) if value is not None]:
+    if enum := _typed_enum(result.get("enum"), result.get("type", "")):
         result["enum"] = enum
     else:
         result.pop("enum", None)
     _restrict_bounds(schema, result)
 
-    if result.get("type") == "object" or "properties" in schema:
-        result["type"] = "object"
+    if result.get("type") == "object":
         result["properties"] = {
             name: restrict(sub) for name, sub in schema.get("properties", {}).items()
         }
@@ -114,23 +129,59 @@ def _simplest_type(types: list[str]) -> str:
     )
 
 
+def _json_type(value: Any) -> str:
+    return next((name for kind, name in _JSON_TYPES if isinstance(value, kind)), "")
+
+
+def _enum_type(values: Any) -> str:
+    """The type an untyped enum's values imply, collapsed like a type list; "" if none."""
+    if not isinstance(values, list):
+        return ""
+    types = [name for value in values if (name := _json_type(value))]
+    if "number" in types and set(types) <= {"integer", "number"}:
+        return "number"
+    return _simplest_type(types)
+
+
+def _typed_enum(values: Any, type_: str) -> list[Any]:
+    """The scalar `values` that fit `type_`; a whole-number float fits `integer` as an int."""
+    kept: list[Any] = []
+    for value in values if isinstance(values, list) else []:
+        name = _json_type(value)
+        if type_ == "integer" and name == "number" and value.is_integer():
+            value, name = int(value), "integer"
+        if name not in ("", "null") and (name == type_ or (name, type_) == ("integer", "number")):
+            kept.append(value)
+    return kept
+
+
+def _same_value(first: Any, second: Any) -> bool:
+    """Equal, and a bool only to a bool: Python has True == 1 where JSON does not."""
+    return isinstance(first, bool) == isinstance(second, bool) and first == second
+
+
 def _branch_type(branch: dict[str, Any]) -> str:
     type_ = branch.get("type", "")
-    return _simplest_type(type_) if isinstance(type_, list) else str(type_)
+    if isinstance(type_, list):
+        return _simplest_type(type_)
+    return str(type_) or _enum_type(branch.get("enum"))
 
 
 def _rank(branch: dict[str, Any]) -> int:
     return _TYPE_RANK.get(_branch_type(branch), 3)
 
 
-def _pick_branch(branches: list[dict[str, Any]]) -> dict[str, Any] | None:
+def _pick_branch(branches: list[dict[str, Any]], enum: Any = None) -> dict[str, Any] | None:
     """The simplest branch of a union, or None if the branches only add constraints.
 
-    An object whose `anyOf` lists alternative `required` sets is not a union of types.
+    A branch whose type admits some of the parent's `enum` comes first. An object whose `anyOf`
+    lists alternative `required` sets is not a union of types.
     """
     candidates = [b for b in branches if isinstance(b, dict) and not (b and set(b) <= _CONSTRAINTS)]
     typed = [b for b in candidates if _branch_type(b) != "null"] or candidates
-    return min(typed, key=_rank, default=None)
+    return min(
+        typed, key=lambda b: (not _typed_enum(enum, _branch_type(b)), _rank(b)), default=None
+    )
 
 
 def _normalize(schema: dict[str, Any]) -> dict[str, Any]:
@@ -163,7 +214,9 @@ def _merge(parts: list[dict[str, Any]]) -> dict[str, Any]:
             elif key in _CEILINGS and _is_number(merged[key]) and _is_number(value):
                 merged[key] = min(merged[key], value)
             elif key == "enum":
-                merged[key] = [item for item in merged[key] if item in value]
+                merged[key] = [
+                    item for item in merged[key] if any(_same_value(item, other) for other in value)
+                ]
             elif key == "required":
                 merged[key] = [*merged[key], *(name for name in value if name not in merged[key])]
             elif key == "properties":
