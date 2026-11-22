@@ -9,6 +9,7 @@ import logging
 import time
 import uuid
 from dataclasses import dataclass
+from email.utils import parsedate_to_datetime
 from typing import Any
 
 from aiohttp import (
@@ -45,6 +46,10 @@ REAUTH_CODES = frozenset(
 # The request's timestamp is too far from the Codie's clock; new credentials would not help.
 CLOCK_SKEW_CODE = "REQUEST_EXPIRED"
 
+# How far the Codie's `Date` header may be from our clock before a bad signature is put down to
+# the clock rather than to the credentials.
+CLOCK_TOLERANCE_S = 300
+
 PAYLOAD_EMPTY = "empty"
 PAYLOAD_JSON = "json"
 
@@ -73,6 +78,22 @@ class CodieApiError(CodieError):
 
 class CodieAuthError(CodieApiError):
     """The Codie no longer accepts our credentials; Pairing has to run again."""
+
+
+def _clocks_differ(date_header: str | None) -> bool:
+    """Whether the Codie's `Date` header puts its clock further from ours than the tolerance.
+
+    The API reports no time of its own, so the header is all there is to check. That the real
+    Codie sends it is unverified; without a usable header this says no, and the caller falls
+    back to re-authentication.
+    """
+    if not date_header:
+        return False
+    try:
+        codie_time = parsedate_to_datetime(date_header).timestamp()
+    except (TypeError, ValueError):
+        return False
+    return abs(codie_time - time.time()) > CLOCK_TOLERANCE_S
 
 
 @dataclass(frozen=True)
@@ -288,6 +309,7 @@ class CodieClient:
             ) as response:
                 raw = await response.read()
                 status = response.status
+                codie_date = response.headers.get("Date")
         except (ClientError, TimeoutError) as err:
             raise CodieConnectionError(f"Cannot reach the Codie at {self._host}") from err
 
@@ -302,14 +324,12 @@ class CodieClient:
             info = parsed if isinstance(parsed, dict) else {}
             code = info.get("code")
             if status == 401 and signed:
-                if code in REAUTH_CODES:
+                if code == CLOCK_SKEW_CODE or (
+                    code == "INVALID_SIGNATURE" and _clocks_differ(codie_date)
+                ):
+                    self._warn_clock_skew()
+                elif code in REAUTH_CODES:
                     raise CodieAuthError(status, code, info.get("message"))
-                if code == CLOCK_SKEW_CODE and not self._clock_skew_warned:
-                    self._clock_skew_warned = True
-                    _LOGGER.warning(
-                        "The Codie rejected a request as expired. The clock of Home Assistant "
-                        "and the Codie differ too much; check the time on both"
-                    )
             raise CodieApiError(status, code, info.get("message"))
         if signed:
             self._clock_skew_warned = False
@@ -318,6 +338,14 @@ class CodieClient:
         if not isinstance(parsed, dict):
             raise CodieResponseError(f"{method} {path} did not return a JSON object")
         return parsed.get("data")
+
+    def _warn_clock_skew(self) -> None:
+        if not self._clock_skew_warned:
+            self._clock_skew_warned = True
+            _LOGGER.warning(
+                "The Codie rejected a signed request. The clock of Home Assistant "
+                "and the Codie differ too much; check the time on both"
+            )
 
     def _sign(self, method: str, path: str, body: bytes) -> dict[str, str]:
         """Build the `X-Local-*` headers. A new nonce is used on every call."""

@@ -133,6 +133,37 @@ async def test_clock_skew_logs_and_does_not_start_reauth(
     assert "clock" in caplog.text.lower()
 
 
+async def test_bad_signature_with_the_codie_clock_far_off_does_not_start_reauth(
+    hass: HomeAssistant, fake_codie: FakeCodie, caplog: pytest.LogCaptureFixture
+) -> None:
+    fake_codie.auth_error = "INVALID_SIGNATURE"
+    fake_codie.date_skew = 3600
+    entry = make_entry(fake_codie)
+    entry.add_to_hass(hass)
+
+    with caplog.at_level(logging.WARNING):
+        assert not await hass.config_entries.async_setup(entry.entry_id)
+
+    assert entry.state is ConfigEntryState.SETUP_RETRY
+    assert reauth_flows(hass, entry) == []
+    assert "clock" in caplog.text.lower()
+
+
+async def test_bad_signature_without_a_date_header_starts_reauth(
+    hass: HomeAssistant, fake_codie: FakeCodie
+) -> None:
+    fake_codie.auth_error = "INVALID_SIGNATURE"
+    fake_codie.date_header = ""
+    entry = make_entry(fake_codie)
+    entry.add_to_hass(hass)
+
+    assert not await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+
+    assert entry.state is ConfigEntryState.SETUP_ERROR
+    assert len(reauth_flows(hass, entry)) == 1
+
+
 async def test_clock_skew_while_running_does_not_start_reauth(
     hass: HomeAssistant, fake_codie: FakeCodie
 ) -> None:

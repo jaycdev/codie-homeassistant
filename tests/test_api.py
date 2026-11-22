@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 import time
 from collections.abc import AsyncGenerator
 
@@ -11,6 +12,7 @@ from aiohttp import ClientSession
 
 from custom_components.codie.api import (
     CodieApiError,
+    CodieAuthError,
     CodieClient,
     CodieConnectionError,
     CodieCredentials,
@@ -214,6 +216,40 @@ async def test_client_with_a_skewed_clock_gets_request_expired(
         await make_client(session, fake_codie).async_get_system()
 
     assert error.value.code == "REQUEST_EXPIRED"
+
+
+async def test_bad_signature_with_the_codie_clock_far_off_is_not_an_auth_error(
+    session: ClientSession, fake_codie: FakeCodie, caplog: pytest.LogCaptureFixture
+) -> None:
+    fake_codie.auth_error = "INVALID_SIGNATURE"
+    fake_codie.date_skew = 3600
+    client = make_client(session, fake_codie)
+
+    with caplog.at_level(logging.WARNING), pytest.raises(CodieApiError) as error:
+        await client.async_get_system()
+    with caplog.at_level(logging.WARNING), pytest.raises(CodieApiError):
+        await client.async_get_system()
+
+    assert not isinstance(error.value, CodieAuthError)
+    assert error.value.code == "INVALID_SIGNATURE"
+    # Warned once for the outage, not once per request.
+    assert caplog.text.lower().count("clock") == 1
+
+
+@pytest.mark.parametrize("date_header", [None, "", "not a date"], ids=["agreeing", "empty", "junk"])
+async def test_bad_signature_without_a_clock_problem_is_an_auth_error(
+    session: ClientSession,
+    fake_codie: FakeCodie,
+    caplog: pytest.LogCaptureFixture,
+    date_header: str | None,
+) -> None:
+    fake_codie.auth_error = "INVALID_SIGNATURE"
+    fake_codie.date_header = date_header
+
+    with caplog.at_level(logging.WARNING), pytest.raises(CodieAuthError):
+        await make_client(session, fake_codie).async_get_system()
+
+    assert "clock" not in caplog.text.lower()
 
 
 async def test_unreachable_codie_raises_connection_error(session: ClientSession) -> None:

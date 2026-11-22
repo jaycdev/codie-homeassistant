@@ -15,6 +15,7 @@ import time
 import uuid
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from email.utils import formatdate
 from typing import Any
 
 from aiohttp import WSMsgType, web
@@ -121,6 +122,12 @@ class FakeCodie:
     refuse_executor: bool = False
     # Answer every signed request with this 401 code, whatever its signature.
     auth_error: str | None = None
+    # What the `Date` header of every reply says: the clock plus `date_skew` seconds, so a test
+    # can make the Codie's reported time differ without changing the timestamps it accepts.
+    # `date_header` replaces it outright ("" stands for a reply without one, as aiohttp always
+    # fills a missing header in).
+    date_skew: float = 0.0
+    date_header: str | None = None
     # The active Slot. `switch_slot_to` moves it right after the next read of it, the way a
     # user switching Characters between our read and our POST would.
     slot: int = 3
@@ -299,6 +306,19 @@ class FakeCodie:
         self,
         request: web.Request,
         handler: Callable[[web.Request], Any],
+    ) -> web.StreamResponse:
+        response = await self._respond(request, handler)
+        # aiohttp would stamp the real clock; the fake's own clock is what a test can move.
+        if not response.prepared:
+            response.headers["Date"] = (
+                self.date_header
+                if self.date_header is not None
+                else formatdate(self.clock() + self.date_skew, usegmt=True)
+            )
+        return response
+
+    async def _respond(
+        self, request: web.Request, handler: Callable[[web.Request], Any]
     ) -> web.StreamResponse:
         body = await request.read()
         recorded = RecordedRequest(
