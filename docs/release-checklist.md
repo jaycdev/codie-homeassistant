@@ -47,3 +47,11 @@ File a new issue for each failure. Include:
 - the versions noted above.
 
 Never include the stored credentials (`local_secret`, `local_session_id`) or a request's `X-Local-*` signing headers, in the issue or in any log you share.
+
+## Publishing the release
+
+Releases are cut by [release-please](https://github.com/googleapis/release-please) from the Conventional Commit messages on `main`. Don't tag or edit the version by hand.
+
+1. Each push to `main` updates an open pull request titled `chore(main): release X.Y.Z`. It bumps `version` in `custom_components/codie/manifest.json` and adds the release's entries to `CHANGELOG.md`. The version follows the commits: `fix:` bumps the patch, `feat:` the minor, and a breaking change (`!`) the minor while the version is below 1.0.0.
+2. Run the checks above against that version. To ship a different version, push an empty commit to `main` with a `Release-As: X.Y.Z` footer.
+3. Merge the release pull request. The workflow tags the merge commit `vX.Y.Z` and publishes a GitHub release with the changelog, which HACS offers as the update.
