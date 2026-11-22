@@ -1,6 +1,6 @@
 # 09 — README, HACS packaging and manual release checklist
 
-Status: ready-for-agent
+Status: resolved
 Type: task
 Blocked by: 04, 05, 06, 08
 
@@ -15,7 +15,14 @@ Spec: [spec.md § Testing](../spec.md#testing)
 
 ## Acceptance criteria
 
-- [ ] The README uses the glossary's terms (Codie, Character, Exposed entity, Tool, Announcement).
-- [ ] The checklist covers every manual check in the spec.
+- [x] The README uses the glossary's terms (Codie, Character, Exposed entity, Tool, Announcement).
+- [x] The checklist covers every manual check in the spec.
 
 ## Comments
+
+Implemented 2026-11-22.
+
+- `README.md` and `docs/release-checklist.md`. `tests/test_docs.py` fails if the README's Tool table and `TOOLS` differ.
+- The checklist covers the spec's eight manual checks, plus cancelling Pairing, the 200-character limit, chat history, and checking that a disabled integration gives new conversations no Tools.
+- For issue 10's failure reports, debug logging now shows each error response's method, path, status, code and message (never the body as a whole or the headers), each Tool call's `turn_id` (also in the warning for a failed call), and each Announcement's `request_id`.
+- No CI in the repo, so HACS validation and hassfest were not added.
