@@ -258,7 +258,39 @@ async def test_a_target_with_no_codie_is_an_error(
     await setup(hass, fake_codie)
     area = ar.async_get(hass).async_create("Empty room")
 
-    with pytest.raises(ServiceValidationError):
+    with pytest.raises(ServiceValidationError) as raised:
         await hass.services.async_call(
             DOMAIN, "announce", {"area_id": area.id, "message": "Hello"}, blocking=True
         )
+
+    assert raised.value.translation_key == "codie_target_missing"
+
+
+async def test_a_call_without_a_target_asks_for_a_codie(
+    hass: HomeAssistant, fake_codie: FakeCodie
+) -> None:
+    await setup(hass, fake_codie)
+
+    with pytest.raises(ServiceValidationError) as raised:
+        await hass.services.async_call(DOMAIN, "announce", {"message": "Hello"}, blocking=True)
+
+    assert raised.value.translation_key == "codie_target_missing"
+
+
+async def test_a_codie_that_is_not_loaded_is_an_error_of_its_own(
+    hass: HomeAssistant, fake_codie: FakeCodie
+) -> None:
+    entry = await setup(hass, fake_codie)
+    devices = dr.async_entries_for_config_entry(dr.async_get(hass), entry.entry_id)
+    assert await hass.config_entries.async_unload(entry.entry_id)
+
+    with pytest.raises(ServiceValidationError) as raised:
+        await hass.services.async_call(
+            DOMAIN,
+            "announce",
+            {"device_id": devices[0].id, "message": "Hello"},
+            blocking=True,
+        )
+
+    assert raised.value.translation_key == "codie_not_loaded"
+    assert fake_codie.utterances == []

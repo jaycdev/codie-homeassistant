@@ -119,7 +119,7 @@ def async_register_services(hass: HomeAssistant) -> None:
         ]
         if not entries:
             raise ServiceValidationError(
-                translation_domain=DOMAIN, translation_key="codie_not_loaded"
+                translation_domain=DOMAIN, translation_key="codie_target_missing"
             )
         for entry in entries:
             if entry.state is not ConfigEntryState.LOADED:

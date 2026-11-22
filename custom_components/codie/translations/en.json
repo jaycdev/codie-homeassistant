@@ -75,8 +75,11 @@
     "announcement_length": {
       "message": "The message must have between 1 and {max} characters."
     },
+    "codie_target_missing": {
+      "message": "Choose a Codie as the target: add a target and pick the Codie device or its Announce entity."
+    },
     "codie_not_loaded": {
-      "message": "That Codie is not set up or not loaded."
+      "message": "That Codie is not loaded. Check its status on the Codie integration page."
     },
     "announce_blocked": {
       "message": "The Codie cannot speak right now ({reason}). It may be asleep or locked; wake it first."
