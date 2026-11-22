@@ -87,6 +87,9 @@ def restrict(schema: dict[str, Any]) -> dict[str, Any]:
         result["additionalProperties"] = False
     elif result.get("type") == "array" and isinstance(schema.get("items"), dict):
         result["items"] = restrict(schema["items"])
+    elif "type" not in result:
+        # The Codie rejects the whole catalog over an untyped schema, such as `In([])`.
+        result["type"] = "string"
     return result
 
 

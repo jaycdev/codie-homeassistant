@@ -161,7 +161,7 @@ def test_a_nullable_array_or_object_is_not_collapsed_to_null() -> None:
 
     assert restrict({"type": ["array", "null"], "items": {"type": "string"}}) == items
     assert restrict({"anyOf": [items, {"type": "null"}]}) == items
-    assert restrict({"anyOf": [{"type": "null"}, {}]}) == {}
+    assert restrict({"anyOf": [{"type": "null"}, {}]}) == {"type": "string"}
     assert restrict({"type": ["object", "null"], "properties": {"a": {"type": "string"}}}) == {
         "type": "object",
         "properties": {"a": {"type": "string"}},
@@ -383,7 +383,7 @@ def test_the_serializer_renders_what_probatio_does_not_know() -> None:
 
     schema = probatio.Schema({probatio.Optional("x"): Opaque()})
 
-    assert from_probatio(schema)["properties"] == {"x": {}}
+    assert from_probatio(schema)["properties"] == {"x": {"type": "string"}}
     assert from_probatio(schema, serializer)["properties"] == {"x": {"type": "integer"}}
 
 
@@ -445,3 +445,11 @@ def test_limits_reject_an_oversized_schema() -> None:
 
     with pytest.raises(SchemaLimitError, match="bytes"):
         check_limits(schema)
+
+
+def test_an_untyped_schema_becomes_a_string() -> None:
+    # The Codie rejects the whole catalog over one untyped property, e.g. `In([])` with no lists.
+    schema = probatio.Schema({probatio.Required("todo_list"): probatio.In([])})
+
+    assert from_probatio(schema)["properties"] == {"todo_list": {"type": "string"}}
+    assert restrict({"type": "array", "items": {}})["items"] == {"type": "string"}
