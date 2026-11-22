@@ -1,8 +1,12 @@
 {
   "domain": "codie",
   "name": "CODE27 Codie",
-  "codeowners": ["@jaycdev"],
-  "after_dependencies": ["conversation"],
+  "codeowners": [
+    "@jaycdev"
+  ],
+  "after_dependencies": [
+    "conversation"
+  ],
   "config_flow": true,
   "documentation": "https://github.com/jaycdev/codie-homeassistant",
   "integration_type": "device",
