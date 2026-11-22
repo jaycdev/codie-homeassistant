@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import hashlib
 import json
 import logging
@@ -46,10 +47,6 @@ ERROR_ASSIST_FAILED = "assist_failed"
 
 ASSIST_LIVE_CONTEXT = "GetLiveContext"
 ASSIST_TODO_GET_ITEMS = "todo_get_items"
-
-_AMBIGUOUS_REASONS = frozenset(
-    {intent.MatchFailedReason.DUPLICATE_NAME, intent.MatchFailedReason.MULTIPLE_TARGETS}
-)
 
 # Every Tool returns this one small shape. Assist's own results are reduced to it.
 _ASSIST_RESULT_SCHEMA: dict[str, Any] = {
@@ -315,10 +312,12 @@ async def async_call_tool(
         )
     except intent.MatchFailedError as err:
         reason = err.result.no_match_reason
-        if reason in _AMBIGUOUS_REASONS:
+        if reason == intent.MatchFailedReason.DUPLICATE_NAME:
+            raise _duplicate_name_error(hass, err) from err
+        if reason == intent.MatchFailedReason.MULTIPLE_TARGETS:
             raise ToolNeedsClarification(
                 ERROR_AMBIGUOUS_TARGET,
-                f"More than one exposed device matches {err.result.no_match_name or 'that'}",
+                f"More than one exposed entity matches {err.result.no_match_name or 'that'}",
             ) from err
         raise ToolError(
             ERROR_TARGET_NOT_FOUND,
@@ -336,21 +335,58 @@ async def async_call_tool(
     return _shape_result(raw)
 
 
+def _duplicate_name_error(hass: HomeAssistant, err: intent.MatchFailedError) -> ToolError:
+    """Ask which one only when their areas tell them apart; otherwise say how to fix it.
+
+    A TV seen through Google Cast and through its own integration is two "Jay TV"s in one
+    room. Asking which one gets the answer "Jay TV" again, so the call could never succeed.
+    """
+    name = err.result.no_match_name or "that"
+    constraints = dataclasses.replace(err.constraints, allow_duplicate_names=True)
+    states = intent.async_match_targets(hass, constraints).states
+    areas = [_area_name(hass, state.entity_id) for state in states]
+    if None not in areas and len(set(areas)) == len(areas):
+        # The name the user said, not each state's name: Assist matched it by alias, so a
+        # friendly name could miss on the retry.
+        choices = ", ".join(sorted(f"{name} ({area})" for area in areas))
+        return ToolNeedsClarification(
+            ERROR_AMBIGUOUS_TARGET,
+            f"More than one exposed entity matches {name}: {choices}. Ask which area.",
+        )
+    entity_ids = ", ".join(sorted(state.entity_id for state in states))
+    return ToolError(
+        ERROR_AMBIGUOUS_TARGET,
+        f"{len(states)} exposed entities are named {name} ({entity_ids}) and their areas do "
+        "not tell them apart. Tell the user to give them different names or aliases in Home "
+        "Assistant, or expose only one of them to Assist.",
+    )
+
+
+def _area_name(hass: HomeAssistant, entity_id: str) -> str | None:
+    """The name of the entity's area, or of its device's area if it has none of its own."""
+    area_id = None
+    if entry := er.async_get(hass).async_get(entity_id):
+        device = dr.async_get(hass).async_get(entry.device_id) if entry.device_id else None
+        area_id = entry.area_id or (device.area_id if device else None)
+    area = ar.async_get(hass).async_get_area(area_id) if area_id else None
+    return area.name if area else None
+
+
 def _exposed_names(hass: HomeAssistant) -> str:
-    """The names of the entities Assist may use, with their areas, cut to fit an error."""
+    """The names of the entities Assist may use, with their areas, cut to fit an error.
+
+    These are the names Assist matches: an entity's aliases, which hold its name unless the
+    user removed it, or its entity id when it has none.
+    """
     entities = er.async_get(hass)
-    devices = dr.async_get(hass)
-    areas = ar.async_get(hass)
     names: list[str] = []
     for state in hass.states.async_all():
         if not async_should_expose(hass, "conversation", state.entity_id):
             continue
-        area_id = None
-        if entry := entities.async_get(state.entity_id):
-            device = devices.async_get(entry.device_id) if entry.device_id else None
-            area_id = entry.area_id or (device.area_id if device else None)
-        area = areas.async_get_area(area_id) if area_id else None
-        names.append(f"{state.name} ({area.name})" if area else state.name)
+        area = _area_name(hass, state.entity_id)
+        entry = entities.async_get(state.entity_id)
+        for name in intent.async_get_entity_aliases(hass, entry, state=state) or [state.entity_id]:
+            names.append(f"{name} ({area})" if area else name)
     text = ", ".join(sorted(names))
     return text if len(text) <= MAX_NAMES_CHARS else text[:MAX_NAMES_CHARS] + ", ..."
 

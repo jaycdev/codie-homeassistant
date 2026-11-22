@@ -13,6 +13,7 @@ import pytest
 from homeassistant.components.homeassistant.exposed_entities import async_expose_entity
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
+from homeassistant.helpers import area_registry as ar
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers import intent, llm, selector
 from homeassistant.setup import async_setup_component
@@ -175,12 +176,18 @@ async def test_a_call_on_a_hidden_entity_fails_and_changes_nothing(
     assert calls == []
 
 
-async def test_ambiguous_names_ask_for_clarification(
+def put_in_area(hass: HomeAssistant, entity_id: str, area_name: str) -> None:
+    area = ar.async_get(hass).async_get_or_create(area_name)
+    er.async_get(hass).async_update_entity(entity_id, area_id=area.id)
+
+
+async def test_a_name_shared_across_areas_asks_which_area(
     hass: HomeAssistant, fake_codie: FakeCodie
 ) -> None:
     await setup_assist(hass)
-    for unique_id in ("lamp_one", "lamp_two"):
-        add_entity(hass, "light", "lamp", True, unique_id=unique_id)
+    for area_name in ("Kitchen", "Bedroom"):
+        lamp = add_entity(hass, "light", "lamp", True, unique_id=f"lamp_{area_name}")
+        put_in_area(hass, lamp, area_name)
     calls = async_mock_service(hass, "light", "turn_on")
     await setup(hass, fake_codie)
     await wait_connected(hass, fake_codie, True)
@@ -188,7 +195,67 @@ async def test_ambiguous_names_ask_for_clarification(
     result = await fake_codie.invoke(INTEGRATION_ID, "turn_on", {"name": "lamp"})
 
     assert result["status"] == "needs_clarification"
+    assert result["code"] == "ambiguous_target"
     assert result["data"]["success"] is False
+    assert "lamp (Bedroom)" in result["message"]
+    assert "lamp (Kitchen)" in result["message"]
+    assert calls == []
+
+
+async def test_asking_which_area_offers_the_name_the_user_said(
+    hass: HomeAssistant, fake_codie: FakeCodie
+) -> None:
+    # Both match "TV" only by alias, so offering their friendly names would miss on the retry.
+    await setup_assist(hass)
+    registry = er.async_get(hass)
+    for name, area_name in (("Samsung", "Bedroom"), ("LG", "Kitchen")):
+        tv = add_entity(hass, "media_player", name, True)
+        registry.async_update_entity(tv, aliases=["TV"])
+        put_in_area(hass, tv, area_name)
+    calls = async_mock_service(hass, "media_player", "turn_on")
+    await setup(hass, fake_codie)
+    await wait_connected(hass, fake_codie, True)
+
+    result = await fake_codie.invoke(INTEGRATION_ID, "turn_on", {"name": "TV"})
+
+    assert result["status"] == "needs_clarification"
+    assert "TV (Bedroom)" in result["message"]
+    assert "TV (Kitchen)" in result["message"]
+    assert "Samsung" not in result["message"]
+    assert calls == []
+
+
+@pytest.mark.parametrize("area_name", ["Jay's Room", None])
+async def test_a_name_no_area_tells_apart_fails_and_says_how_to_fix_it(
+    hass: HomeAssistant, fake_codie: FakeCodie, area_name: str | None
+) -> None:
+    # One TV, seen through Google Cast and the TV's own integration: a question about
+    # which "Jay TV" is one the user cannot answer.
+    await setup_assist(hass)
+    assert await async_setup_component(hass, "remote", {})
+    tvs = [
+        add_entity(hass, "media_player", "Jay TV", True, unique_id="jay_tv_cast"),
+        add_entity(hass, "media_player", "Jay TV", True, unique_id="jay_tv"),
+        add_entity(hass, "remote", "Jay TV", True, unique_id="jay_tv_remote"),
+    ]
+    if area_name:
+        for tv in tvs:
+            put_in_area(hass, tv, area_name)
+    calls = [
+        *async_mock_service(hass, "media_player", "turn_on"),
+        *async_mock_service(hass, "remote", "turn_on"),
+    ]
+    await setup(hass, fake_codie)
+    await wait_connected(hass, fake_codie, True)
+
+    result = await fake_codie.invoke(INTEGRATION_ID, "turn_on", {"name": "Jay TV"})
+
+    assert result["status"] == "failed"
+    assert result["code"] == "ambiguous_target"
+    assert result["data"]["success"] is False
+    for tv in tvs:
+        assert tv in result["message"]
+    assert "expose only one" in result["message"]
     assert calls == []
 
 
@@ -558,3 +625,35 @@ async def test_a_missed_name_lists_the_exposed_names_to_try(
     assert "study_lamp" in error
     assert "study_ac" in error
     assert "secret_lamp" not in error
+
+
+async def test_a_missed_name_lists_the_aliases_assist_matches(
+    hass: HomeAssistant, fake_codie: FakeCodie
+) -> None:
+    # Assist matches an entity by its aliases, the first of which is its name unless the user
+    # removed it. A name it does not match only sends the Character round again.
+    await setup_assist(hass)
+    lamp = add_entity(hass, "light", "study_lamp", True)
+    tv = add_entity(hass, "media_player", "Jay TV", True)
+    porch = add_entity(hass, "light", "porch", True)
+    registry = er.async_get(hass)
+    registry.async_update_entity(lamp, aliases=[er.COMPUTED_NAME, "desk light"])
+    registry.async_update_entity(tv, aliases=["Bedroom TV"])
+    # With no aliases at all, only its entity id matches.
+    registry.async_update_entity(porch, aliases=[])
+    calls = async_mock_service(hass, "media_player", "turn_on")
+    await setup(hass, fake_codie)
+    await wait_connected(hass, fake_codie, True)
+
+    missed = await fake_codie.invoke(INTEGRATION_ID, "turn_off", {"name": "aid"})
+
+    assert missed["code"] == "target_not_found"
+    error = missed["data"]["error"]
+    assert "study_lamp" in error
+    assert "desk light" in error
+    assert "Bedroom TV" in error
+    assert "Jay TV" not in error
+    assert porch in error
+    for name in ("Jay TV", "Bedroom TV"):
+        await fake_codie.invoke(INTEGRATION_ID, "turn_on", {"name": name})
+    assert len(calls) == 1
