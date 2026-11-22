@@ -1,6 +1,6 @@
 # CODE27 Codie for Home Assistant
 
-Talk to your Codie's Character to control your home. Say "Aria, turn on my bedroom TV" or "Aria, set the AC to 24°C" (Aria being your active Character), and it happens. Home Assistant automations can also make the Character speak.
+Talk to your Codie's Character to control your home. Say "Hey Codie, turn on my bedroom TV" or "Hey Codie, set the AC to 24°C", and the Character in the active Slot makes it happen. Home Assistant automations can also make the Character speak.
 
 The Character's own model on the Codie understands what you say. It calls a Tool that this integration offers. Home Assistant runs the Tool, and the Character phrases the reply in its own voice. Home Assistant never hears your words, only the Tool call.
 

@@ -6,7 +6,7 @@ Vocabulary follows [CONTEXT.md](../../CONTEXT.md). Decisions: [ADR-0001](../../d
 
 ## Goal
 
-The user says to their Codie "Aria, turn on my bedroom TV" or "Aria, set the AC to 24°C" (Aria being the active Character), and it happens. The Character only sees and controls Exposed entities. Home Assistant automations can also make the Character speak.
+The user says to their Codie "Hey Codie, turn on my bedroom TV" or "Hey Codie, set the AC to 24°C", and the active Character makes it happen. The Character only sees and controls Exposed entities. Home Assistant automations can also make the Character speak.
 
 ## Shape
 

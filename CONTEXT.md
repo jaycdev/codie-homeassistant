@@ -11,7 +11,7 @@ A CODE27 desktop companion device on the local network, paired with Home Assista
 _Avoid_: CODE27 (the maker), codei, codeihub, the device
 
 **Character**:
-The persona in the Codie's active Slot, with its own name and voice; the one the user addresses ("Aria, turn on my bedroom TV").
+The persona in the Codie's active Slot, with its own name and voice; the one that answers when the user says "Hey Codie, turn on my bedroom TV". The wake word is always "Hey Codie", whichever Character is active.
 _Avoid_: Codie (when meaning the persona), assistant, agent
 
 **Slot**:
