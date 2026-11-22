@@ -1,0 +1,16 @@
+announce:
+  target:
+    device:
+      integration: codie
+  fields:
+    message:
+      required: true
+      example: The washing is done
+      selector:
+        text:
+          multiline: true
+    queue:
+      required: false
+      default: false
+      selector:
+        boolean:

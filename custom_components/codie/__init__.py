@@ -11,10 +11,13 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_HOST, CONF_PORT, EVENT_COMPONENT_LOADED, Platform
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ConfigEntryAuthFailed, ConfigEntryError, ConfigEntryNotReady
+from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.debounce import Debouncer
+from homeassistant.helpers.typing import ConfigType
 
+from .announce import async_register_services
 from .api import CodieAuthError, CodieClient, CodieCredentials, CodieError
 from .const import (
     CONF_INTEGRATION_ID,
@@ -28,7 +31,9 @@ from .tools import CatalogRegistrar, async_call_tool
 
 _LOGGER = logging.getLogger(__name__)
 
-PLATFORMS = [Platform.BINARY_SENSOR]
+PLATFORMS = [Platform.BINARY_SENSOR, Platform.NOTIFY]
+
+CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
 
 # Components load in bursts at startup; wait for the burst to end before comparing catalogs.
 REFRESH_COOLDOWN_S = 10.0
@@ -56,6 +61,12 @@ def _client_for(hass: HomeAssistant, entry: ConfigEntry[Any]) -> CodieClient:
             local_session_id=entry.data.get(CONF_LOCAL_SESSION_ID, ""),
         ),
     )
+
+
+async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
+    """Register the integration's actions."""
+    async_register_services(hass)
+    return True
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: CodieConfigEntry) -> bool:

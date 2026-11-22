@@ -48,6 +48,50 @@
       "connected": {
         "name": "Connected"
       }
+    },
+    "notify": {
+      "announce": {
+        "name": "Announce"
+      }
+    }
+  },
+  "services": {
+    "announce": {
+      "name": "Announce",
+      "description": "Makes the Character speak a message.",
+      "fields": {
+        "message": {
+          "name": "Message",
+          "description": "What the Character says, word for word. Up to 16000 characters."
+        },
+        "queue": {
+          "name": "Queue",
+          "description": "Not available yet. Leave off to speak the message at once, cutting off whatever the Character is doing."
+        }
+      }
+    }
+  },
+  "exceptions": {
+    "announcement_length": {
+      "message": "The message must have between 1 and {max} characters."
+    },
+    "queue_not_supported": {
+      "message": "Queued announcements are not supported yet. Turn off Queue."
+    },
+    "codie_not_loaded": {
+      "message": "That Codie is not set up or not loaded."
+    },
+    "announce_blocked": {
+      "message": "The Codie cannot speak right now ({reason}). It may be asleep or locked; wake it first."
+    },
+    "announce_cannot_connect": {
+      "message": "Could not reach the Codie. Check that it is awake and on the network."
+    },
+    "announce_auth_failed": {
+      "message": "The Codie no longer accepts Home Assistant. Pair it again from the integration page."
+    },
+    "announce_failed": {
+      "message": "The Codie refused the announcement: {error}"
     }
   }
 }

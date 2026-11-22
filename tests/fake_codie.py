@@ -121,6 +121,13 @@ class FakeCodie:
     refuse_executor: bool = False
     # Answer every signed request with this 401 code, whatever its signature.
     auth_error: str | None = None
+    # The active Slot. `switch_slot_to` moves it right after the next read of it, the way a
+    # user switching Characters between our read and our POST would.
+    slot: int = 3
+    switch_slot_to: int | None = None
+    # Refuse utterances with (status, code), as when the Codie is asleep or locked.
+    utterance_error: tuple[int, str] | None = None
+    utterances: list[dict[str, Any]] = field(default_factory=list)
     _executor: web.WebSocketResponse | None = None
     _result_waiters: dict[str, asyncio.Future[dict[str, Any]]] = field(default_factory=dict)
     _server: TestServer | None = None
@@ -140,6 +147,8 @@ class FakeCodie:
         app.router.add_put(tool_path, self._tool_put)
         app.router.add_delete(tool_path, self._tool_delete)
         app.router.add_get(f"{WS_PREFIX}tool-integrations/{{integration_id}}/executor", self._ws)
+        app.router.add_get(f"{API}/data/user/slot", self._slot)
+        app.router.add_post(f"{API}/data/user/tts/utterances", self._utterance)
         app.router.add_post(f"{API}/data/user/echo", self._echo)
         app.router.add_get(f"{API}/data/user/name/{{name}}", self._name)
         self._server = TestServer(app, host="127.0.0.1")
@@ -457,6 +466,37 @@ class FakeCodie:
                 if waiter is not None and not waiter.done():
                     waiter.set_result(data)
         return ws
+
+    async def _slot(self, request: web.Request) -> web.Response:
+        current = self.slot
+        if self.switch_slot_to is not None:
+            self.slot, self.switch_slot_to = self.switch_slot_to, None
+        return web.json_response(
+            {
+                "success": True,
+                "data": {"slot_number": current, "selected_cloth": 1, "version": f"{current}:1"},
+            }
+        )
+
+    async def _utterance(self, request: web.Request) -> web.Response:
+        body = await request.json()
+        if set(body) != {"request_id", "slot", "text"}:
+            return _error(400, "INVALID_REQUEST")
+        try:
+            uuid.UUID(body["request_id"])
+        except ValueError:
+            return _error(400, "INVALID_REQUEST")
+        if not 1 <= len(str(body["text"]).strip()) <= 16000:
+            return _error(400, "INVALID_REQUEST")
+        if self.utterance_error is not None:
+            return _error(*self.utterance_error)
+        if body["slot"] != self.slot:
+            return _error(409, "SLOT_MISMATCH")
+        self.utterances.append(body)
+        return web.json_response(
+            {"success": True, "data": {"utterance_id": str(uuid.uuid4()), "state": "queued"}},
+            status=202,
+        )
 
     async def _echo(self, request: web.Request) -> web.Response:
         """Harness-only signed POST, so tests can exercise bodies."""

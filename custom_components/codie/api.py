@@ -192,6 +192,22 @@ class CodieClient:
         """Read the device and user details (`machine_id` identifies the device)."""
         return _as_dict(await self.async_request("GET", "/data/user/system"))
 
+    async def async_get_slot(self) -> int:
+        """Read the number (1 to 5) of the active Slot."""
+        data = _as_dict(await self.async_request("GET", "/data/user/slot"))
+        slot = data.get("slot_number")
+        if not isinstance(slot, int) or isinstance(slot, bool):
+            raise CodieResponseError("The Slot reply has no slot_number")
+        return slot
+
+    async def async_post_utterance(self, request_id: str, slot: int, text: str) -> None:
+        """Make the Character in `slot` speak `text` now. Returns once the Codie accepted it."""
+        await self.async_request(
+            "POST",
+            "/data/user/tts/utterances",
+            {"request_id": request_id, "slot": slot, "text": text},
+        )
+
     async def async_get_tool_integration(self, integration_id: str) -> dict[str, Any] | None:
         """Read a registered tool integration, or None if it does not exist."""
         try:
