@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from typing import Any
 from unittest.mock import patch
 
+import pytest
 from homeassistant.components.homeassistant.exposed_entities import async_expose_entity
 from homeassistant.config_entries import ConfigEntryState
 from homeassistant.const import CONF_HOST, CONF_PORT
@@ -164,6 +166,19 @@ async def test_unknown_tool_fails(hass: HomeAssistant, fake_codie: FakeCodie) ->
 
     assert result["status"] == "failed"
     assert result["code"] == "unknown_tool"
+
+
+async def test_a_failed_call_logs_its_turn_id(
+    hass: HomeAssistant, fake_codie: FakeCodie, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A failure report needs the Codie's turn_id to find the turn on the Codie's side."""
+    await setup(hass, fake_codie)
+    await wait_connected(hass, fake_codie, True)
+
+    with caplog.at_level(logging.WARNING):
+        await fake_codie.invoke(INTEGRATION_ID, "nope", {})
+
+    assert "turn_id=t1" in caplog.text
 
 
 async def test_connected_sensor_follows_connection(

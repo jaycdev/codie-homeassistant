@@ -323,6 +323,10 @@ class CodieClient:
         if status >= 400:
             info = parsed if isinstance(parsed, dict) else {}
             code = info.get("code")
+            # Only the error's code and message: never the body as a whole, or the headers.
+            _LOGGER.debug(
+                "%s %s returned %s %s: %s", method, url.path, status, code, info.get("message")
+            )
             if status == 401 and signed:
                 if code == CLOCK_SKEW_CODE or (
                     code == "INVALID_SIGNATURE" and _clocks_differ(codie_date)

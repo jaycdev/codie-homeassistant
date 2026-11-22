@@ -236,6 +236,23 @@ async def test_bad_signature_with_the_codie_clock_far_off_is_not_an_auth_error(
     assert caplog.text.lower().count("clock") == 1
 
 
+async def test_an_error_response_is_logged_without_the_signing_headers(
+    session: ClientSession, fake_codie: FakeCodie, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A failure report needs the method, path, status and code, but never the credentials."""
+    fake_codie.auth_error = "LOCAL_SECRET_MISMATCH"
+
+    with (
+        caplog.at_level(logging.DEBUG, logger="custom_components.codie"),
+        pytest.raises(CodieAuthError),
+    ):
+        await make_client(session, fake_codie).async_get_system()
+
+    assert f"GET {API}/data/user/system returned 401 LOCAL_SECRET_MISMATCH" in caplog.text
+    assert fake_codie.local_secret not in caplog.text
+    assert "X-Local" not in caplog.text
+
+
 @pytest.mark.parametrize("date_header", [None, "", "not a date"], ids=["agreeing", "empty", "junk"])
 async def test_bad_signature_without_a_clock_problem_is_an_auth_error(
     session: ClientSession,

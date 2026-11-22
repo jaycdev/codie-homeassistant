@@ -104,8 +104,10 @@ async def async_announce(
         # A switch of Slots between the read and the POST is answered with 409; read again once.
         for attempt in (1, 2):
             slot = await client.async_get_slot()
+            request_id = str(uuid.uuid4())
+            _LOGGER.debug("Announcing in Slot %s, request_id=%s", slot, request_id)
             try:
-                await client.async_post_utterance(str(uuid.uuid4()), slot, text)
+                await client.async_post_utterance(request_id, slot, text)
             except CodieApiError as err:
                 if err.code == SLOT_MISMATCH and attempt == 1:
                     _LOGGER.debug("The Slot changed while announcing; reading it again")

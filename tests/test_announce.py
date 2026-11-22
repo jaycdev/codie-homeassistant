@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import uuid
 from typing import Any
 
@@ -75,6 +76,19 @@ async def test_each_announcement_gets_a_new_request_id(
 
     first, second = fake_codie.utterances
     assert first["request_id"] != second["request_id"]
+
+
+async def test_the_request_id_is_logged(
+    hass: HomeAssistant, fake_codie: FakeCodie, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A failure report needs the request_id to find the Announcement on the Codie's side."""
+    await setup(hass, fake_codie)
+
+    with caplog.at_level(logging.DEBUG, logger="custom_components.codie"):
+        await notify(hass, "One")
+
+    (utterance,) = fake_codie.utterances
+    assert f"request_id={utterance['request_id']}" in caplog.text
 
 
 async def test_a_slot_switch_between_read_and_send_is_retried_once(

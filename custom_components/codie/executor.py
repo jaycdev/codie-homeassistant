@@ -174,10 +174,11 @@ class CodieExecutor:
                 _LOGGER.warning("Ignoring malformed invoke message")
                 return True
             _LOGGER.debug(
-                "Invoke %s(%s) timeout_ms=%s",
+                "Invoke %s(%s) timeout_ms=%s turn_id=%s",
                 call["name"],
                 call.get("arguments") or {},
                 call.get("timeout_ms"),
+                call.get("turn_id"),
             )
             task = asyncio.create_task(self._invoke(ws, call))
             self._calls[task] = str(call["invocation_id"])
@@ -222,12 +223,13 @@ class CodieExecutor:
             )
         else:
             _LOGGER.warning(
-                "Tool %s(%s) %s: %s %s",
+                "Tool %s(%s) %s: %s %s turn_id=%s",
                 call["name"],
                 call.get("arguments") or {},
                 result["status"],
                 result.get("code"),
                 result.get("message") or result["data"].get("error", ""),
+                call.get("turn_id"),
             )
         # Answer on the socket the call came in on: a newer connection knows nothing of it.
         try:
