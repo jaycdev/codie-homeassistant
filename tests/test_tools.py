@@ -11,6 +11,7 @@ from homeassistant.config_entries import ConfigEntryState
 from homeassistant.const import CONF_HOST, CONF_PORT
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import entity_registry as er
+from homeassistant.helpers import llm
 from homeassistant.setup import async_setup_component
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
@@ -127,6 +128,32 @@ async def test_invoke_returns_only_exposed_entities(
     schema = fake_codie.tool_integrations[INTEGRATION_ID]["catalog"]["tools"][0]["result_schema"]
     assert set(data) <= set(schema["properties"])
     assert set(schema["required"]) <= set(data)
+
+
+async def _language_of_call(hass: HomeAssistant, fake: FakeCodie) -> str | None:
+    """The language of the LLM context a Tool call runs with."""
+    await expose_light(hass, "kitchen_lamp", True)
+    await setup(hass, fake)
+    await wait_connected(hass, fake, True)
+    with patch("custom_components.codie.tools.llm.async_get_api", wraps=llm.async_get_api) as spy:
+        result = await fake.invoke(INTEGRATION_ID, "get_home_state", {})
+    assert result["status"] == "succeeded"
+    language: str | None = spy.call_args.args[2].language
+    return language
+
+
+async def test_call_runs_in_the_ai_language(hass: HomeAssistant, fake_codie: FakeCodie) -> None:
+    assert await _language_of_call(hass, fake_codie) == "ja"
+
+
+async def test_call_has_no_language_without_ai_language(
+    hass: HomeAssistant, fake_codie: FakeCodie
+) -> None:
+    async def system() -> dict[str, Any]:
+        return {"language": "en"}
+
+    with patch("custom_components.codie.api.CodieClient.async_get_system", side_effect=system):
+        assert await _language_of_call(hass, fake_codie) is None
 
 
 async def test_unknown_tool_fails(hass: HomeAssistant, fake_codie: FakeCodie) -> None:

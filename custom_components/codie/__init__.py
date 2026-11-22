@@ -84,10 +84,20 @@ async def async_setup_entry(hass: HomeAssistant, entry: CodieConfigEntry) -> boo
     except CodieError as err:
         raise ConfigEntryNotReady(f"Cannot register tools on the Codie: {err}") from err
 
+    # The Character speaks the AI language, not the device's UI language. It is read once here.
+    try:
+        system = await client.async_get_system()
+    except CodieAuthError as err:
+        raise ConfigEntryAuthFailed(f"The Codie rejected our credentials: {err}") from err
+    except CodieError as err:
+        raise ConfigEntryNotReady(f"Cannot read the Codie's language: {err}") from err
+    ai_language = system.get("ai_language")
+    language = ai_language if isinstance(ai_language, str) and ai_language else None
+
     executor = CodieExecutor(
         client,
         integration_id,
-        partial(async_call_tool, hass),
+        partial(async_call_tool, hass, language),
         on_auth_failed=lambda: entry.async_start_reauth(hass),
     )
     entry.runtime_data = CodieRuntimeData(client=client, executor=executor)

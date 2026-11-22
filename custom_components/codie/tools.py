@@ -124,20 +124,23 @@ _FALLBACK_CLASSES: dict[str, tuple[tuple[str, str, tuple[Any, ...]], ...]] = {
 }
 
 
-def _llm_context() -> llm.LLMContext:
-    """The context for every call: the Assist API only ever sees what Assist exposes."""
+def _llm_context(language: str | None = None) -> llm.LLMContext:
+    """The context for every call: the Assist API only ever sees what Assist exposes.
+
+    `language` is the Codie's AI language, the one the Character speaks and understands.
+    """
     return llm.LLMContext(
         platform="codie",
         context=None,
-        language=None,
+        language=language,
         assistant="conversation",
         device_id=None,
     )
 
 
-async def _assist_api_tools(hass: HomeAssistant) -> list[llm.Tool]:
+async def _assist_api_tools(hass: HomeAssistant, language: str | None = None) -> list[llm.Tool]:
     try:
-        api = await llm.async_get_api(hass, llm.LLM_API_ASSIST, _llm_context())
+        api = await llm.async_get_api(hass, llm.LLM_API_ASSIST, _llm_context(language))
     except HomeAssistantError as err:
         _LOGGER.debug("Cannot read the Assist API: %s", err)
         return []
@@ -274,15 +277,15 @@ class CatalogRegistrar:
 
 
 async def async_call_tool(
-    hass: HomeAssistant, name: str, arguments: dict[str, Any]
+    hass: HomeAssistant, language: str | None, name: str, arguments: dict[str, Any]
 ) -> dict[str, Any]:
     """Run a Tool through Home Assistant's Assist API and return the result data."""
     tool = next((t for t in TOOLS if t.name == name), None)
     if tool is None:
         raise ToolError(ERROR_UNKNOWN_TOOL, f"No tool named {name}")
-    context = _llm_context()
+    context = _llm_context(language)
     try:
-        api_tools = await _assist_api_tools(hass)
+        api_tools = await _assist_api_tools(hass, language)
         assist_tool = await _assist_tool(hass, tool.assist_name, api_tools)
         if assist_tool is None or (
             tool.assist_name in _API_NAMES and find_api_tool(api_tools, tool.assist_name) is None

@@ -92,8 +92,9 @@ async def test_session_id_is_stored_when_the_codie_issues_one(
 
     assert result["type"] is FlowResultType.CREATE_ENTRY
     assert result["data"][CONF_LOCAL_SESSION_ID] == "session-42"
-    # The unique-ID lookup was signed with the session header and accepted.
-    (system,) = fake_codie.requests_to("/data/user/system")
+    # The unique-ID lookup was signed with the session header and accepted. Setting up the new
+    # entry reads the system again, for the AI language.
+    system = fake_codie.requests_to("/data/user/system")[0]
     assert system.rejected_with is None
 
 
