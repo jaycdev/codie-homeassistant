@@ -16,6 +16,7 @@ from pytest_homeassistant_custom_component.common import MockConfigEntry
 from custom_components.codie.const import DOMAIN
 
 from .fake_codie import FakeCodie
+from .test_reauth import reauth_flows
 from .test_tools import make_entry, setup
 
 NOTIFY_ENTITY = "notify.codie_announce"
@@ -264,6 +265,38 @@ async def test_a_target_with_no_codie_is_an_error(
         )
 
     assert raised.value.translation_key == "codie_target_missing"
+
+
+async def test_a_codie_that_rejects_the_credentials_starts_reauth_for_the_action(
+    hass: HomeAssistant, fake_codie: FakeCodie
+) -> None:
+    entry = await setup(hass, fake_codie)
+    fake_codie.auth_error = "LOCAL_SECRET_MISMATCH"
+
+    for queue in (False, True):
+        with pytest.raises(HomeAssistantError) as raised:
+            await announce(hass, entry, message="Hello", queue=queue)
+        assert raised.value.translation_key == "announce_auth_failed"
+        await hass.async_block_till_done()
+        assert len(reauth_flows(hass, entry)) == 1
+
+    assert fake_codie.utterances == []
+    assert fake_codie.agent_results == []
+
+
+async def test_a_codie_that_rejects_the_credentials_starts_reauth_for_the_notify_entity(
+    hass: HomeAssistant, fake_codie: FakeCodie
+) -> None:
+    entry = await setup(hass, fake_codie)
+    fake_codie.auth_error = "LOCAL_SECRET_MISMATCH"
+
+    with pytest.raises(HomeAssistantError) as raised:
+        await notify(hass, "Hello")
+
+    assert raised.value.translation_key == "announce_auth_failed"
+    await hass.async_block_till_done()
+    assert len(reauth_flows(hass, entry)) == 1
+    assert fake_codie.utterances == []
 
 
 async def test_a_call_without_a_target_asks_for_a_codie(

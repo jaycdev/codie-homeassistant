@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import logging
 import uuid
+from collections.abc import Callable
+from functools import partial
 
 import voluptuous as vol
 from homeassistant.config_entries import ConfigEntryState
@@ -69,24 +71,33 @@ def _checked_text(message: str, max_chars: int) -> str:
     return text
 
 
-async def async_announce_queued(client: CodieClient, message: str) -> None:
+async def async_announce_queued(
+    client: CodieClient, message: str, on_auth_failed: Callable[[], None]
+) -> None:
     """Have the Character speak `message` once idle, and remember it in its chat history.
 
     Raises `ServiceValidationError` for text over the Codie's 200 character limit (never
-    truncated), and `HomeAssistantError` if it could not be queued.
+    truncated), and `HomeAssistantError` if it could not be queued. A Codie that rejects the
+    credentials also calls `on_auth_failed`, which starts re-authentication.
     """
     text = _checked_text(message, MAX_QUEUED_CHARS)
     try:
         await client.async_post_agent_result(text)
+    except CodieAuthError as err:
+        on_auth_failed()
+        raise _announce_error(err) from err
     except CodieError as err:
         raise _announce_error(err) from err
 
 
-async def async_announce(client: CodieClient, message: str) -> None:
+async def async_announce(
+    client: CodieClient, message: str, on_auth_failed: Callable[[], None]
+) -> None:
     """Make the Character speak `message` now, cutting off whatever it is doing.
 
     Raises `ServiceValidationError` for text the Codie would refuse, and
-    `HomeAssistantError` if it could not be spoken.
+    `HomeAssistantError` if it could not be spoken. A Codie that rejects the credentials
+    also calls `on_auth_failed`, which starts re-authentication.
     """
     text = _checked_text(message, MAX_IMMEDIATE_CHARS)
     try:
@@ -101,6 +112,9 @@ async def async_announce(client: CodieClient, message: str) -> None:
                     continue
                 raise
             return
+    except CodieAuthError as err:
+        on_auth_failed()
+        raise _announce_error(err) from err
     except CodieError as err:
         raise _announce_error(err) from err
 
@@ -126,6 +140,10 @@ def async_register_services(hass: HomeAssistant) -> None:
                 raise ServiceValidationError(
                     translation_domain=DOMAIN, translation_key="codie_not_loaded"
                 )
-            await send(entry.runtime_data.client, call.data[ATTR_MESSAGE])
+            await send(
+                entry.runtime_data.client,
+                call.data[ATTR_MESSAGE],
+                partial(entry.async_start_reauth, hass),
+            )
 
     hass.services.async_register(DOMAIN, SERVICE_ANNOUNCE, handle_announce, ANNOUNCE_SCHEMA)

@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
+from functools import partial
+
 from homeassistant.components.notify import NotifyEntity
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.device_registry import DeviceInfo
@@ -20,7 +23,15 @@ async def async_setup_entry(
 ) -> None:
     """Add the Announce entity."""
     assert entry.unique_id is not None
-    async_add_entities([CodieAnnounceEntity(entry.runtime_data.client, entry.unique_id)])
+    async_add_entities(
+        [
+            CodieAnnounceEntity(
+                entry.runtime_data.client,
+                entry.unique_id,
+                partial(entry.async_start_reauth, hass),
+            )
+        ]
+    )
 
 
 class CodieAnnounceEntity(NotifyEntity):
@@ -29,12 +40,18 @@ class CodieAnnounceEntity(NotifyEntity):
     _attr_has_entity_name = True
     _attr_translation_key = "announce"
 
-    def __init__(self, client: CodieClient, unique_id: str) -> None:
-        """Announce through `client`, for the Codie identified by `unique_id`."""
+    def __init__(
+        self, client: CodieClient, unique_id: str, on_auth_failed: Callable[[], None]
+    ) -> None:
+        """Announce through `client`, for the Codie identified by `unique_id`.
+
+        `on_auth_failed` starts re-authentication when the Codie rejects the credentials.
+        """
         self._client = client
+        self._on_auth_failed = on_auth_failed
         self._attr_unique_id = f"{unique_id}_announce"
         self._attr_device_info = DeviceInfo(identifiers={(DOMAIN, unique_id)})
 
     async def async_send_message(self, message: str, title: str | None = None) -> None:
         """Speak `message`. A title is ignored: the Character speaks only the text."""
-        await async_announce(self._client, message)
+        await async_announce(self._client, message, self._on_auth_failed)
