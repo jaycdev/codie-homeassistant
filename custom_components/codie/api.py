@@ -80,6 +80,10 @@ class CodieAuthError(CodieApiError):
     """The Codie no longer accepts our credentials; Pairing has to run again."""
 
 
+class CodieNotConfirmedError(CodieApiError):
+    """The Codie sent a screen command but could not confirm that the screen changed."""
+
+
 def _clocks_differ(date_header: str | None) -> bool:
     """Whether the Codie's `Date` header puts its clock further from ours than the tolerance.
 
@@ -129,11 +133,53 @@ class CodiePairing:
     local_session_id: str
 
 
+@dataclass(frozen=True)
+class CodieBrightness:
+    """The screen brightness: `level` is a percentage, None while the Codie cannot tell."""
+
+    level: int | None
+    writable: bool
+
+
+@dataclass(frozen=True)
+class CodieMusicPlayback:
+    """The parts of the music playback state that the Music volume needs."""
+
+    # None while the Codie is not ready to play music.
+    volume: int | None
+    # The last command the Codie took, whether the device ran it, and why it did not.
+    request_id: str | None
+    applied: bool
+    error_code: str | None
+
+
+@dataclass(frozen=True)
+class CodieLightSwitches:
+    """The side light switches. Each is None if the Codie left it out of the reply."""
+
+    side_lights: bool | None
+    music_side_lights: bool | None
+
+
 def _as_dict(data: Any) -> dict[str, Any]:
     """Require the reply's `data` to be an object."""
     if not isinstance(data, dict):
         raise CodieResponseError("Reply has no data object")
     return data
+
+
+def _number(data: dict[str, Any], key: str) -> int | None:
+    """A whole number from `data`, or None if it is missing or not a number."""
+    value = data.get(key)
+    if isinstance(value, bool) or not isinstance(value, int | float):
+        return None
+    return round(value)
+
+
+def _flag(data: dict[str, Any], key: str) -> bool | None:
+    """A boolean from `data`, or None if it is missing or not a boolean."""
+    value = data.get(key)
+    return value if isinstance(value, bool) else None
 
 
 class CodieClient:
@@ -221,6 +267,98 @@ class CodieClient:
             raise CodieResponseError("The Slot reply has no slot_number")
         return slot
 
+    async def async_get_voice_volume(self, slot: int) -> int | None:
+        """Read the Voice volume (0 to 100) of the Character in `slot`.
+
+        The slot is always passed: without it the Codie answers for Slot 1.
+        """
+        data = _as_dict(
+            await self.async_request("GET", "/data/user/character", query={"slot": str(slot)})
+        )
+        return _number(data, "tts_volume")
+
+    async def async_set_voice_volume(self, volume: int) -> None:
+        """Set the Voice volume of the active Slot (no `slot_number` means the current one)."""
+        await self.async_request("PUT", "/data/user/character", {"tts_volume": volume})
+
+    async def async_get_music_playback(self) -> CodieMusicPlayback:
+        """Read the Music volume (0 to 100) and the outcome of the last command."""
+        data = _as_dict(await self.async_request("GET", "/data/user/music/playback"))
+        volume_max = _number(data, "volume_max")
+        volume = _number(data, "volume_level")
+        if volume_max is not None and volume_max != 100:
+            # The API says `volume_max` is 100 once the device is ready to play music.
+            volume = None
+        elif volume_max == 100 and volume is None:
+            # The Codie leaves out fields that are zero.
+            volume = 0
+        request_id = data.get("request_id")
+        error_code = data.get("error_code")
+        return CodieMusicPlayback(
+            volume=volume,
+            request_id=request_id if isinstance(request_id, str) else None,
+            applied=data.get("applied") is True,
+            error_code=error_code if isinstance(error_code, str) and error_code else None,
+        )
+
+    async def async_set_music_volume(self, volume: int) -> str:
+        """Ask the Codie to set the Music volume and return the command's `request_id`.
+
+        The Codie only queues the command; `async_get_music_playback` shows whether it ran.
+        """
+        request_id = str(uuid.uuid4())
+        await self.async_request(
+            "POST",
+            "/data/user/music/control",
+            {"action": "SET_VOLUME", "volume_level": volume, "request_id": request_id},
+        )
+        return request_id
+
+    async def async_get_brightness(self) -> CodieBrightness:
+        """Read the screen brightness."""
+        data = _as_dict(await self.async_request("GET", "/data/user/device/brightness"))
+        return CodieBrightness(level=_number(data, "level"), writable=data.get("writable") is True)
+
+    async def async_set_brightness(self, level: int) -> None:
+        """Set the screen brightness (0 to 100)."""
+        await self.async_request("PUT", "/data/user/device/brightness", {"level": level})
+
+    async def async_get_screen(self) -> bool | None:
+        """Read whether the screen is on. None if the Codie's two screens disagree."""
+        data = _as_dict(await self.async_request("GET", "/data/user/device/screen"))
+        return _flag(data, "on")
+
+    async def async_set_screen(self, on: bool) -> None:
+        """Turn the screen on or off.
+
+        Raises `CodieNotConfirmedError` if the Codie sent the command but could not confirm it.
+        """
+        try:
+            await self.async_request("PUT", "/data/user/device/screen", {"on": on})
+        except CodieApiError as err:
+            if err.status == 409 or (err.status == 503 and err.code == "SCREEN_READBACK_FAILED"):
+                raise CodieNotConfirmedError(err.status, err.code, err.message) from err
+            raise
+
+    async def async_get_light_switches(self) -> CodieLightSwitches:
+        """Read the Side lights and Music side lights switches."""
+        data = _as_dict(await self.async_request("GET", "/data/user/light-master-switch"))
+        return CodieLightSwitches(
+            side_lights=_flag(data, "normalEnabled"), music_side_lights=_flag(data, "musicEnabled")
+        )
+
+    async def async_set_side_lights(self, enabled: bool) -> None:
+        """Switch the Side lights, leaving the Music side lights as they are."""
+        await self.async_request(
+            "POST", "/data/user/light-master-switch", {"normalEnabled": enabled}
+        )
+
+    async def async_set_music_side_lights(self, enabled: bool) -> None:
+        """Switch the Music side lights, leaving the Side lights as they are."""
+        await self.async_request(
+            "POST", "/data/user/light-master-switch", {"musicEnabled": enabled}
+        )
+
     async def async_post_utterance(self, request_id: str, slot: int, text: str) -> None:
         """Make the Character in `slot` speak `text` now. Returns once the Codie accepted it."""
         await self.async_request(
@@ -277,16 +415,35 @@ class CodieClient:
         except (ClientError, TimeoutError) as err:
             raise CodieConnectionError(f"Cannot reach the Codie at {self._host}") from err
 
-    async def async_request(self, method: str, path: str, payload: Any | None = None) -> Any:
+    async def async_request(
+        self,
+        method: str,
+        path: str,
+        payload: Any | None = None,
+        *,
+        query: dict[str, str] | None = None,
+    ) -> Any:
         """Send a signed request. `path` is relative to the API prefix."""
-        return await self._request(method, path, payload, signed=True)
+        return await self._request(method, path, payload, signed=True, query=query)
 
     # --- plumbing ------------------------------------------------------------------------
 
     async def _request(
-        self, method: str, path: str, payload: Any | None = None, *, signed: bool
+        self,
+        method: str,
+        path: str,
+        payload: Any | None = None,
+        *,
+        signed: bool,
+        query: dict[str, str] | None = None,
     ) -> Any:
-        url = URL.build(scheme="http", host=self._host, port=self._port, path=API_PREFIX + path)
+        url = URL.build(
+            scheme="http",
+            host=self._host,
+            port=self._port,
+            path=API_PREFIX + path,
+            query=query or {},
+        )
         # The body is serialised once; the hash and the wire bytes are the same bytes.
         body = (
             b""
