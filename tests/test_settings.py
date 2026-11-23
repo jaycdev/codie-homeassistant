@@ -148,16 +148,17 @@ async def test_setting_the_voice_volume_leaves_the_slot_to_the_codie(
 async def test_setting_the_music_volume(hass: HomeAssistant, fake_codie: FakeCodie) -> None:
     await setup(hass, fake_codie)
 
-    await set_number(hass, MUSIC_VOLUME, 20)
+    await set_number(hass, MUSIC_VOLUME, 45)
 
     (write,) = writes(fake_codie)
     assert (write.method, write.path) == ("POST", "/v1/api/data/user/music/control")
     body = write.json
     assert set(body) == {"action", "volume_level", "request_id"}
     assert body["action"] == "SET_VOLUME"
-    assert body["volume_level"] == 20
+    # The Codie rounds down to its steps, so the lowest level of the step is sent.
+    assert body["volume_level"] == 46
     assert str(uuid.UUID(body["request_id"])) == body["request_id"]
-    assert state_of(hass, MUSIC_VOLUME) == "20"
+    assert state_of(hass, MUSIC_VOLUME) == "45"
 
 
 async def test_setting_the_brightness(hass: HomeAssistant, fake_codie: FakeCodie) -> None:
@@ -466,11 +467,11 @@ async def test_the_music_volume_waits_for_the_codie_to_apply_it(
     fake_codie.requests.clear()
     fake_codie.music_apply_after_reads = 3
 
-    await set_number(hass, MUSIC_VOLUME, 20)
+    await set_number(hass, MUSIC_VOLUME, 18)
 
     # One before the command, three while waiting, then the read-back.
     assert len(fake_codie.requests_to("/data/user/music/playback")) == 5
-    assert state_of(hass, MUSIC_VOLUME) == "20"
+    assert state_of(hass, MUSIC_VOLUME) == "18"
 
 
 async def test_a_music_volume_the_codie_reports_an_error_for_fails(
@@ -485,16 +486,26 @@ async def test_a_music_volume_the_codie_reports_an_error_for_fails(
     assert state_of(hass, MUSIC_VOLUME) == "55"
 
 
-async def test_a_music_volume_the_codie_rounds_is_a_success(
-    hass: HomeAssistant, fake_codie: FakeCodie
+@pytest.mark.parametrize(("volume", "shown"), [(40, "36"), (41, "45"), (100, "100"), (3, "0")])
+async def test_a_music_volume_between_steps_goes_to_the_nearest_step(
+    hass: HomeAssistant, fake_codie: FakeCodie, volume: int, shown: str
 ) -> None:
     await setup(hass, fake_codie)
-    # The Codie maps the level to its own volume steps.
-    fake_codie.music_applied_volume = 40
 
-    await set_number(hass, MUSIC_VOLUME, 37)
+    await set_number(hass, MUSIC_VOLUME, volume)
 
-    assert state_of(hass, MUSIC_VOLUME) == "40"
+    assert state_of(hass, MUSIC_VOLUME) == shown
+
+
+@pytest.mark.parametrize("volume", [9, 18, 27, 36, 45, 54, 63, 72, 81, 90])
+async def test_setting_a_music_volume_the_codie_reported_keeps_it(
+    hass: HomeAssistant, fake_codie: FakeCodie, volume: int
+) -> None:
+    await setup(hass, fake_codie)
+
+    await set_number(hass, MUSIC_VOLUME, volume)
+
+    assert state_of(hass, MUSIC_VOLUME) == str(volume)
 
 
 async def test_setting_the_music_volume_to_zero(hass: HomeAssistant, fake_codie: FakeCodie) -> None:
@@ -511,10 +522,10 @@ async def test_two_quick_music_volume_writes_do_not_fail(
 ) -> None:
     await setup(hass, fake_codie)
 
-    await asyncio.gather(set_number(hass, MUSIC_VOLUME, 20), set_number(hass, MUSIC_VOLUME, 30))
+    await asyncio.gather(set_number(hass, MUSIC_VOLUME, 18), set_number(hass, MUSIC_VOLUME, 27))
 
     # Whichever command reached the Codie last is the one it ran.
-    assert state_of(hass, MUSIC_VOLUME) in ("20", "30")
+    assert state_of(hass, MUSIC_VOLUME) in ("18", "27")
 
 
 async def test_a_music_volume_the_codie_does_not_apply_in_time_fails(

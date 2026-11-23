@@ -33,6 +33,9 @@ UPDATE_INTERVAL = timedelta(seconds=30)
 # for this long; if it has not said by then, the Music volume it reports decides.
 MUSIC_CONFIRM_INTERVAL_S = 0.5
 MUSIC_CONFIRM_TIMEOUT_S = 3.0
+# The Codie has this many Music volume steps above 0 and rounds a level down to one, so it
+# reports 27 for step 3 but takes 27 as step 2. Measured on a Codie; the API does not say.
+MUSIC_VOLUME_STEPS = 11
 
 
 class SettingGroup(StrEnum):
@@ -84,19 +87,26 @@ def _write_error(err: CodieError) -> HomeAssistantError:
     return failed("setting_failed", error=str(err))
 
 
-async def async_set_music_volume(client: CodieClient, volume: int) -> None:
-    """Set the Music volume, and ask the Codie whether it ran the command.
+def _music_step(volume: int) -> int:
+    """The Codie's Music volume step nearest to `volume`."""
+    return round(volume * MUSIC_VOLUME_STEPS / 100)
 
-    The Codie maps the level to its own volume steps, so the level it reports afterwards may
-    differ from `volume`: a command it reports as applied is a success whatever the level.
+
+async def async_set_music_volume(client: CodieClient, volume: int) -> None:
+    """Set the Music volume to the Codie's step nearest `volume`, and ask whether it ran.
+
+    The level sent is the lowest one in that step, since the Codie rounds down; the level it
+    reports afterwards may still differ from `volume`. A command it reports as applied is a
+    success whatever the level.
     Raises `CodieMusicVolumeError` if it reports an error for this command. A command that
     another one replaced is left to that one. If the Codie has said nothing by the deadline,
-    this succeeds only when the Music volume it reports is already `volume`, and otherwise
+    this succeeds only when the Music volume it reports is already in that step, and otherwise
     raises `CodieMusicVolumeNotConfirmedError`.
     """
     # The command the Codie last took, so that an older one is not taken for a newer one.
     before = (await client.async_get_music_playback()).request_id
-    request_id = await client.async_set_music_volume(volume)
+    step = _music_step(volume)
+    request_id = await client.async_set_music_volume(-(-step * 100 // MUSIC_VOLUME_STEPS))
     loop = asyncio.get_running_loop()
     deadline = loop.time() + MUSIC_CONFIRM_TIMEOUT_S
     while True:
@@ -111,7 +121,7 @@ async def async_set_music_volume(client: CodieClient, volume: int) -> None:
             # Another write replaced ours; its own wait reports how that went.
             return
         if loop.time() >= deadline:
-            if playback.volume == volume:
+            if playback.volume is not None and _music_step(playback.volume) == step:
                 return
             if playback.volume is None:
                 raise CodieMusicVolumeNotConfirmedError("the Music player is not ready")

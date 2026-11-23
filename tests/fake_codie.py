@@ -150,8 +150,8 @@ class FakeCodie:
     music_apply_after_reads: int | None = 2
     # Report this `error_code` for the command instead of applying it.
     music_error_code: str | None = None
-    # Applies this volume instead of the one asked for.
-    music_applied_volume: int | None = None
+    # Like the real Codie, a Music volume is rounded down to one of this many steps above 0.
+    music_volume_steps: int = 11
     # The last SET_VOLUME as playback reports it, and how many reads it has had.
     _music_command: dict[str, Any] | None = None
     _music_reads: int = 0
@@ -573,11 +573,7 @@ class FakeCodie:
                 if self.music_error_code is not None:
                     command["error_code"] = self.music_error_code
                 else:
-                    self.music_volume = (
-                        command["volume"]
-                        if self.music_applied_volume is None
-                        else self.music_applied_volume
-                    )
+                    self.music_volume = self._music_level(command["volume"])
                     command["applied"] = True
         data: dict[str, Any] = {}
         if self.music_volume_max is not None:
@@ -591,6 +587,15 @@ class FakeCodie:
             if "error_code" in command:
                 data["error_code"] = command["error_code"]
         return web.json_response({"success": True, "data": data})
+
+    def _music_level(self, volume: int) -> int:
+        """The Music volume the real Codie reports after it is asked for `volume`."""
+        steps = self.music_volume_steps
+        step = volume * steps // 100
+        if volume and not step:
+            # A level just above 0 still gets the first step.
+            step = 1
+        return step * 100 // steps
 
     async def _music_control(self, request: web.Request) -> web.Response:
         body = await request.json()
