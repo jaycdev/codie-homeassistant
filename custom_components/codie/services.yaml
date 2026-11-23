@@ -2,6 +2,9 @@ announce:
   target:
     device:
       integration: codie
+    entity:
+      integration: codie
+      domain: notify
   fields:
     message:
       required: true

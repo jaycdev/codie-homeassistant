@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import uuid
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -11,7 +12,9 @@ from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
 from homeassistant.helpers import area_registry as ar
 from homeassistant.helpers import device_registry as dr
+from homeassistant.helpers.selector import TargetSelector
 from homeassistant.setup import async_setup_component
+from homeassistant.util.yaml import load_yaml_dict
 from pytest_homeassistant.common import MockConfigEntry
 
 from custom_components.codie.const import DOMAIN
@@ -341,3 +344,13 @@ async def test_a_codie_that_is_not_loaded_is_an_error_of_its_own(
 
     assert raised.value.translation_key == "codie_not_loaded"
     assert fake_codie.utterances == []
+
+
+def test_the_target_picker_offers_the_action_only_for_codie_entities() -> None:
+    # Without an entity filter the frontend offers the action for every entity in the home.
+    services_yaml = Path(__file__).parent.parent / "custom_components/codie/services.yaml"
+    services = load_yaml_dict(str(services_yaml))
+
+    target = TargetSelector(services["announce"]["target"]).config
+
+    assert target["entity"] == [{"integration": DOMAIN, "domain": ["notify"]}]
