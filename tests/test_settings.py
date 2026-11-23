@@ -468,8 +468,8 @@ async def test_the_music_volume_waits_for_the_codie_to_apply_it(
 
     await set_number(hass, MUSIC_VOLUME, 20)
 
-    # Three reads while waiting, then the read-back.
-    assert len(fake_codie.requests_to("/data/user/music/playback")) == 4
+    # One before the command, three while waiting, then the read-back.
+    assert len(fake_codie.requests_to("/data/user/music/playback")) == 5
     assert state_of(hass, MUSIC_VOLUME) == "20"
 
 
@@ -485,18 +485,66 @@ async def test_a_music_volume_the_codie_reports_an_error_for_fails(
     assert state_of(hass, MUSIC_VOLUME) == "55"
 
 
-async def test_a_music_volume_the_codie_does_not_confirm_is_not_an_error(
+async def test_a_music_volume_the_codie_rounds_is_a_success(
+    hass: HomeAssistant, fake_codie: FakeCodie
+) -> None:
+    await setup(hass, fake_codie)
+    # The Codie maps the level to its own volume steps.
+    fake_codie.music_applied_volume = 40
+
+    await set_number(hass, MUSIC_VOLUME, 37)
+
+    assert state_of(hass, MUSIC_VOLUME) == "40"
+
+
+async def test_setting_the_music_volume_to_zero(hass: HomeAssistant, fake_codie: FakeCodie) -> None:
+    await setup(hass, fake_codie)
+
+    await set_number(hass, MUSIC_VOLUME, 0)
+
+    assert fake_codie.music_volume == 0
+    assert state_of(hass, MUSIC_VOLUME) == "0"
+
+
+async def test_two_quick_music_volume_writes_do_not_fail(
+    hass: HomeAssistant, fake_codie: FakeCodie
+) -> None:
+    await setup(hass, fake_codie)
+
+    await asyncio.gather(set_number(hass, MUSIC_VOLUME, 20), set_number(hass, MUSIC_VOLUME, 30))
+
+    # Whichever command reached the Codie last is the one it ran.
+    assert state_of(hass, MUSIC_VOLUME) in ("20", "30")
+
+
+async def test_a_music_volume_the_codie_does_not_apply_in_time_fails(
     hass: HomeAssistant, fake_codie: FakeCodie
 ) -> None:
     entry = await setup(hass, fake_codie)
     fake_codie.music_apply_after_reads = None
 
-    await set_number(hass, MUSIC_VOLUME, 20)
+    with pytest.raises(
+        HomeAssistantError, match="could not confirm it: the Music volume is 55, not 20"
+    ):
+        await set_number(hass, MUSIC_VOLUME, 20)
 
     assert state_of(hass, MUSIC_VOLUME) == "55"
     # The Codie gets to it later, and the next poll shows it.
     fake_codie.music_volume = 20
     await refresh(hass, entry)
+    assert state_of(hass, MUSIC_VOLUME) == "20"
+
+
+async def test_a_music_volume_that_is_already_right_when_the_wait_ends_succeeds(
+    hass: HomeAssistant, fake_codie: FakeCodie
+) -> None:
+    await setup(hass, fake_codie)
+    # The Codie never says it applied the command, but the volume is what was asked for.
+    fake_codie.music_apply_after_reads = None
+    fake_codie.music_volume = 20
+
+    await set_number(hass, MUSIC_VOLUME, 20)
+
     assert state_of(hass, MUSIC_VOLUME) == "20"
 
 

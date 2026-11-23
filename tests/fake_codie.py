@@ -150,6 +150,8 @@ class FakeCodie:
     music_apply_after_reads: int | None = 2
     # Report this `error_code` for the command instead of applying it.
     music_error_code: str | None = None
+    # Applies this volume instead of the one asked for.
+    music_applied_volume: int | None = None
     # The last SET_VOLUME as playback reports it, and how many reads it has had.
     _music_command: dict[str, Any] | None = None
     _music_reads: int = 0
@@ -571,7 +573,11 @@ class FakeCodie:
                 if self.music_error_code is not None:
                     command["error_code"] = self.music_error_code
                 else:
-                    self.music_volume = command["volume"]
+                    self.music_volume = (
+                        command["volume"]
+                        if self.music_applied_volume is None
+                        else self.music_applied_volume
+                    )
                     command["applied"] = True
         data: dict[str, Any] = {}
         if self.music_volume_max is not None:

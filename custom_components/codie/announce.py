@@ -14,8 +14,9 @@ from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
 from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers.service import async_extract_config_entry_ids
 
-from .api import CodieApiError, CodieAuthError, CodieClient, CodieConnectionError, CodieError
+from .api import CodieApiError, CodieAuthError, CodieClient, CodieError
 from .const import DOMAIN
+from .errors import failed, unreachable_error
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -40,24 +41,16 @@ ANNOUNCE_SCHEMA = probatio.Schema(
 )
 
 
-def _failed(key: str, **placeholders: str) -> HomeAssistantError:
-    return HomeAssistantError(
-        translation_domain=DOMAIN, translation_key=key, translation_placeholders=placeholders
-    )
-
-
 def _announce_error(err: CodieError) -> HomeAssistantError:
     """Turn a failure of either announcement endpoint into a Home Assistant error."""
-    if isinstance(err, CodieConnectionError):
-        return _failed("announce_cannot_connect")
-    if isinstance(err, CodieAuthError):
-        return _failed("announce_auth_failed")
+    if (unreachable := unreachable_error(err, "announce")) is not None:
+        return unreachable
     if isinstance(err, CodieApiError):
         if err.code in BLOCKED_CODES:
-            return _failed("announce_blocked", reason=err.code or "")
+            return failed("announce_blocked", reason=err.code or "")
         if err.status == SERVICE_UNAVAILABLE:
-            return _failed("announce_not_ready")
-    return _failed("announce_failed", error=str(err))
+            return failed("announce_not_ready")
+    return failed("announce_failed", error=str(err))
 
 
 def _checked_text(message: str, max_chars: int) -> str:

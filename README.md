@@ -33,7 +33,7 @@ The Codie is added as a device with these entities:
 - **Connected** (binary sensor): on while Home Assistant is connected to the Codie and serving its Tools. While it is off, new conversations with the Character have no home-control Tools.
 - **Announce** (notify): see [Announcements](#announcements).
 - **Voice volume** (number, 0–100): how loud the Character speaks, Announcements included. It follows the active Slot: it shows and sets the volume of the Character in that Slot, so it changes when you switch Slots.
-- **Music volume** (number, 0–100): how loud the Codie plays music. One level for the whole Codie. It works without the music page open. The Codie only queues the change, so Home Assistant asks it for up to three seconds whether the change ran. If the Codie reports an error, the action fails. If it says nothing in that time, the action succeeds and the new value shows up on a later refresh. Unavailable while the Codie's music player is not ready.
+- **Music volume** (number, 0–100): how loud the Codie plays music. One level for the whole Codie. It works without the music page open. The Codie only queues the change, so Home Assistant asks it for up to three seconds whether the change ran. The action succeeds once the Codie reports that it applied the change. The Codie rounds the level to its own volume steps, so the Music volume shown afterwards can differ slightly from the one you set. It fails if the Codie reports an error, or says nothing within three seconds and its Music volume is not the one you set. Unavailable while the Codie's music player is not ready.
 - **Screen** (switch): turns the Codie's screen on and off. It is unknown when the Codie's two screens disagree. If the Codie sent the change but could not confirm it, the action fails.
 - **Screen brightness** (number, 0–100 %, configuration): unavailable while the Codie reports that its brightness cannot be set.
 - **Side lights** (switch, configuration): the LED strip whenever the Codie is not in Music mode.
@@ -85,7 +85,7 @@ Remember the [warning above](#code27-codie-for-home-assistant): anything exposed
 ## Screen switch and Assist
 
 > [!WARNING]
-> If you expose the **Screen** switch to Assist, the Character can turn its own screen off, for example when you say "Hey Codie, turn off your screen". A Codie with its screen off blocks conversations and Announcements. Only Home Assistant or the device itself can turn the screen back on. Leave the Screen switch unexposed unless you accept this.
+> If you expose the **Screen** switch to Assist, the Character can turn its own screen off, for example when you say "Hey Codie, turn off your screen". A Codie with its screen off blocks conversations and Announcements. Only Home Assistant or the Codie itself can turn the screen back on. Leave the Screen switch unexposed unless you accept this.
 
 ## Announcements
 

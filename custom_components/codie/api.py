@@ -10,6 +10,7 @@ import time
 import uuid
 from dataclasses import dataclass
 from email.utils import parsedate_to_datetime
+from http import HTTPStatus
 from typing import Any
 
 from aiohttp import (
@@ -147,7 +148,7 @@ class CodieMusicPlayback:
 
     # None while the Codie is not ready to play music.
     volume: int | None
-    # The last command the Codie took, whether the device ran it, and why it did not.
+    # The last command the Codie took, whether the Codie ran it, and why it did not.
     request_id: str | None
     applied: bool
     error_code: str | None
@@ -287,7 +288,7 @@ class CodieClient:
         volume_max = _number(data, "volume_max")
         volume = _number(data, "volume_level")
         if volume_max is not None and volume_max != 100:
-            # The API says `volume_max` is 100 once the device is ready to play music.
+            # The API says `volume_max` is 100 once the Codie is ready to play music.
             volume = None
         elif volume_max == 100 and volume is None:
             # The Codie leaves out fields that are zero.
@@ -336,7 +337,10 @@ class CodieClient:
         try:
             await self.async_request("PUT", "/data/user/device/screen", {"on": on})
         except CodieApiError as err:
-            if err.status == 409 or (err.status == 503 and err.code == "SCREEN_READBACK_FAILED"):
+            if err.status == HTTPStatus.CONFLICT or (
+                err.status == HTTPStatus.SERVICE_UNAVAILABLE
+                and err.code == "SCREEN_READBACK_FAILED"
+            ):
                 raise CodieNotConfirmedError(err.status, err.code, err.message) from err
             raise
 
