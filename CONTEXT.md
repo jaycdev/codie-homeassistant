@@ -17,6 +17,24 @@ _Avoid_: Codie (when meaning the persona), assistant, agent
 **Slot**:
 One of the Codie's numbered positions, each holding a Character; exactly one is active at a time.
 
+**Voice volume**:
+How loud a Character speaks, Announcements included. Each Slot keeps its own.
+_Avoid_: volume (unqualified), TTS volume
+
+**Music volume**:
+How loud the Codie plays music. One level for the whole Codie, separate from Voice volume.
+_Avoid_: volume (unqualified), system volume
+
+**Music mode**:
+The Codie showing its music player instead of the Character.
+
+**Side lights**:
+The Codie's LED strip, whenever it is not in Music mode. Switched on and off separately from Music side lights.
+_Avoid_: normal side lights, LEDs
+
+**Music side lights**:
+The Codie's LED strip while it is in Music mode.
+
 **Pairing**:
 The one-time exchange in which the Codie displays a code, the user enters it in Home Assistant, and Home Assistant receives lasting credentials for that Codie.
 
