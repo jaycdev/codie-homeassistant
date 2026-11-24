@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.2.0](https://github.com/jaycdev/codie-homeassistant/compare/v0.1.0...v0.2.0) (2026-11-24)
+
+
+### Features
+
+* let Home Assistant adjust the Codie's volume, screen and side lights ([#6](https://github.com/jaycdev/codie-homeassistant/issues/6)) ([65e04ce](https://github.com/jaycdev/codie-homeassistant/commit/65e04ce5e9e0b3f083e26caeda71d41eec6e53e0))
+
+
+### Bug Fixes
+
+* offer codie.announce only for Codie targets in the action picker ([#4](https://github.com/jaycdev/codie-homeassistant/issues/4)) ([3ebd4c2](https://github.com/jaycdev/codie-homeassistant/commit/3ebd4c276ffd828cc90350fc8c1a2ef6baf1dc42))
+
 ## 0.1.0 (2026-11-22)
 
 
