@@ -138,6 +138,33 @@ class FakeCodie:
     # Queued announcements, and the status to refuse them with (503: speech service not ready).
     agent_results: list[dict[str, Any]] = field(default_factory=list)
     agent_result_error: tuple[int, str] | None = None
+    # Settings. Voice volume belongs to the Slot; the others are one value for the whole Codie.
+    voice_volumes: dict[int, int] = field(
+        default_factory=lambda: {1: 10, 2: 20, 3: 30, 4: 40, 5: 50}
+    )
+    music_volume: int = 55
+    # What `volume_max` says; the real Codie reports 100 once its music player is ready.
+    music_volume_max: int | None = 100
+    # SET_VOLUME is queued: it takes effect on this many playback reads after the POST. None:
+    # never, as when the Codie is busy.
+    music_apply_after_reads: int | None = 2
+    # Report this `error_code` for the command instead of applying it.
+    music_error_code: str | None = None
+    # Like the real Codie, a Music volume is rounded down to one of this many steps above 0.
+    music_volume_steps: int = 11
+    # The last SET_VOLUME as playback reports it, and how many reads it has had.
+    _music_command: dict[str, Any] | None = None
+    _music_reads: int = 0
+    brightness: int | None = 70
+    brightness_writable: bool = True
+    # None: the Codie's two screens disagree.
+    screen_on: bool | None = True
+    side_lights: bool = True
+    music_side_lights: bool = False
+    # Refuse every change to a setting with (status, code).
+    setting_write_error: tuple[int, str] | None = None
+    # Change the screen, then answer with (status, code): sent, but not confirmed.
+    screen_unconfirmed: tuple[int, str] | None = None
     _executor: web.WebSocketResponse | None = None
     _result_waiters: dict[str, asyncio.Future[dict[str, Any]]] = field(default_factory=dict)
     _server: TestServer | None = None
@@ -158,6 +185,16 @@ class FakeCodie:
         app.router.add_delete(tool_path, self._tool_delete)
         app.router.add_get(f"{WS_PREFIX}tool-integrations/{{integration_id}}/executor", self._ws)
         app.router.add_get(f"{API}/data/user/slot", self._slot)
+        app.router.add_get(f"{API}/data/user/character", self._character_get)
+        app.router.add_put(f"{API}/data/user/character", self._character_put)
+        app.router.add_get(f"{API}/data/user/music/playback", self._playback)
+        app.router.add_post(f"{API}/data/user/music/control", self._music_control)
+        app.router.add_get(f"{API}/data/user/device/brightness", self._brightness_get)
+        app.router.add_put(f"{API}/data/user/device/brightness", self._brightness_put)
+        app.router.add_get(f"{API}/data/user/device/screen", self._screen_get)
+        app.router.add_put(f"{API}/data/user/device/screen", self._screen_put)
+        app.router.add_get(f"{API}/data/user/light-master-switch", self._lights_get)
+        app.router.add_post(f"{API}/data/user/light-master-switch", self._lights_post)
         app.router.add_post(f"{API}/data/user/tts/utterances", self._utterance)
         app.router.add_post(f"{API}/data/user/agent/results", self._agent_result)
         app.router.add_post(f"{API}/data/user/echo", self._echo)
@@ -501,6 +538,139 @@ class FakeCodie:
                 "data": {"slot_number": current, "selected_cloth": 1, "version": f"{current}:1"},
             }
         )
+
+    async def _character_get(self, request: web.Request) -> web.Response:
+        # Without `slot` the real Codie answers for Slot 1, not for the active one.
+        slot = int(request.query.get("slot", 1))
+        return web.json_response(
+            {
+                "success": True,
+                "data": {"slot_number": slot, "tts_volume": self.voice_volumes[slot]},
+            }
+        )
+
+    async def _character_put(self, request: web.Request) -> web.Response:
+        body = await request.json()
+        if self.setting_write_error is not None:
+            return _error(*self.setting_write_error)
+        # Without `slot_number` (or with 0) the change goes to the Slot that is active now.
+        slot = body.get("slot_number") or self.slot
+        volume = body.get("tts_volume")
+        if set(body) - {"slot_number", "tts_volume"} or not isinstance(volume, int):
+            return _error(400, "INVALID_REQUEST")
+        self.voice_volumes[slot] = volume
+        return web.json_response(
+            {"success": True, "data": {"slot_number": slot, "tts_volume": volume}}
+        )
+
+    async def _playback(self, request: web.Request) -> web.Response:
+        command = self._music_command
+        if command is not None:
+            self._music_reads += 1
+            if self._music_reads >= (self.music_apply_after_reads or 1 << 30) or (
+                self.music_error_code is not None
+            ):
+                if self.music_error_code is not None:
+                    command["error_code"] = self.music_error_code
+                else:
+                    self.music_volume = self._music_level(command["volume"])
+                    command["applied"] = True
+        data: dict[str, Any] = {}
+        if self.music_volume_max is not None:
+            data["volume_max"] = self.music_volume_max
+        # Like the real Codie, leave out a field that is zero.
+        if self.music_volume:
+            data["volume_level"] = self.music_volume
+        if command is not None:
+            data["request_id"] = command["request_id"]
+            data["applied"] = command["applied"]
+            if "error_code" in command:
+                data["error_code"] = command["error_code"]
+        return web.json_response({"success": True, "data": data})
+
+    def _music_level(self, volume: int) -> int:
+        """The Music volume the real Codie reports after it is asked for `volume`."""
+        steps = self.music_volume_steps
+        step = volume * steps // 100
+        if volume and not step:
+            # A level just above 0 still gets the first step.
+            step = 1
+        return step * 100 // steps
+
+    async def _music_control(self, request: web.Request) -> web.Response:
+        body = await request.json()
+        if self.setting_write_error is not None:
+            return _error(*self.setting_write_error)
+        try:
+            uuid.UUID(body["request_id"])
+        except KeyError, ValueError:
+            return _error(400, "INVALID_REQUEST")
+        if body.get("action") != "SET_VOLUME" or not isinstance(body.get("volume_level"), int):
+            return _error(400, "INVALID_REQUEST")
+        self._music_reads = 0
+        self._music_command = {
+            "request_id": body["request_id"],
+            "volume": body["volume_level"],
+            "applied": False,
+        }
+        return web.json_response({"success": True, "data": {"request_id": body["request_id"]}})
+
+    async def _brightness_get(self, request: web.Request) -> web.Response:
+        return web.json_response(
+            {
+                "success": True,
+                "data": {"level": self.brightness, "writable": self.brightness_writable},
+            }
+        )
+
+    async def _brightness_put(self, request: web.Request) -> web.Response:
+        body = await request.json()
+        if self.setting_write_error is not None:
+            return _error(*self.setting_write_error)
+        if set(body) != {"level"} or not isinstance(body["level"], int):
+            return _error(400, "INVALID_REQUEST")
+        self.brightness = body["level"]
+        return await self._brightness_get(request)
+
+    async def _screen_get(self, request: web.Request) -> web.Response:
+        return web.json_response(
+            {"success": True, "data": {"on": self.screen_on, "channels": [], "command_sent": False}}
+        )
+
+    async def _screen_put(self, request: web.Request) -> web.Response:
+        body = await request.json()
+        if self.setting_write_error is not None:
+            return _error(*self.setting_write_error)
+        if set(body) != {"on"} or not isinstance(body["on"], bool):
+            return _error(400, "INVALID_REQUEST")
+        self.screen_on = body["on"]
+        if self.screen_unconfirmed is not None:
+            return _error(*self.screen_unconfirmed)
+        return await self._screen_get(request)
+
+    async def _lights_get(self, request: web.Request) -> web.Response:
+        return web.json_response(
+            {
+                "success": True,
+                "data": {
+                    # `enabled` is an alias of `normalEnabled`, not of both switches.
+                    "enabled": self.side_lights,
+                    "normalEnabled": self.side_lights,
+                    "musicEnabled": self.music_side_lights,
+                },
+            }
+        )
+
+    async def _lights_post(self, request: web.Request) -> web.Response:
+        body = await request.json()
+        if self.setting_write_error is not None:
+            return _error(*self.setting_write_error)
+        # `enabled` aliases `normalEnabled`; the integration must never send it.
+        if not body or set(body) - {"normalEnabled", "musicEnabled"}:
+            return _error(400, "INVALID_REQUEST")
+        self.side_lights = body.get("normalEnabled", self.side_lights)
+        self.music_side_lights = body.get("musicEnabled", self.music_side_lights)
+        return await self._lights_get(request)
 
     async def _utterance(self, request: web.Request) -> web.Response:
         body = await request.json()

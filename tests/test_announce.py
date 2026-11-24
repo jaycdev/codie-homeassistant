@@ -48,6 +48,7 @@ async def test_notify_sends_the_text_for_the_current_slot(
     hass: HomeAssistant, fake_codie: FakeCodie
 ) -> None:
     await setup(hass, fake_codie)
+    fake_codie.requests.clear()  # the settings poll reads the Slot too
 
     await notify(hass, "The washing is done")
 
@@ -98,6 +99,7 @@ async def test_a_slot_switch_between_read_and_send_is_retried_once(
     hass: HomeAssistant, fake_codie: FakeCodie
 ) -> None:
     await setup(hass, fake_codie)
+    fake_codie.requests.clear()  # the settings poll reads the Slot too
     fake_codie.slot = 3
     fake_codie.switch_slot_to = 4
 
@@ -168,6 +170,7 @@ async def test_a_queued_announcement_is_sent_as_an_agent_result(
     hass: HomeAssistant, fake_codie: FakeCodie
 ) -> None:
     entry = await setup(hass, fake_codie)
+    fake_codie.requests.clear()  # the settings poll reads the Slot too
 
     await announce(hass, entry, message="  Dinner is ready  ", queue=True)
 

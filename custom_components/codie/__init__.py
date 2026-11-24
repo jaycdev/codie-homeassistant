@@ -27,11 +27,12 @@ from .const import (
     DOMAIN,
 )
 from .executor import CodieExecutor
+from .settings import CodieSettingsCoordinator
 from .tools import CatalogRegistrar, async_call_tool
 
 _LOGGER = logging.getLogger(__name__)
 
-PLATFORMS = [Platform.BINARY_SENSOR, Platform.NOTIFY]
+PLATFORMS = [Platform.BINARY_SENSOR, Platform.NOTIFY, Platform.NUMBER, Platform.SWITCH]
 
 CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
 
@@ -45,6 +46,7 @@ class CodieRuntimeData:
 
     client: CodieClient
     executor: CodieExecutor
+    settings: CodieSettingsCoordinator
 
 
 type CodieConfigEntry = ConfigEntry[CodieRuntimeData]
@@ -100,7 +102,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: CodieConfigEntry) -> boo
         partial(async_call_tool, hass, language),
         on_auth_failed=lambda: entry.async_start_reauth(hass),
     )
-    entry.runtime_data = CodieRuntimeData(client=client, executor=executor)
+    settings = CodieSettingsCoordinator(hass, entry, client)
+    # The settings do not gate setup: the Character works without them. If they cannot be read
+    # now the entities start unavailable and recover on a later poll. A Codie that rejects
+    # our credentials still starts re-authentication.
+    await settings.async_refresh()
+    entry.runtime_data = CodieRuntimeData(client=client, executor=executor, settings=settings)
 
     dr.async_get(hass).async_get_or_create(
         config_entry_id=entry.entry_id,

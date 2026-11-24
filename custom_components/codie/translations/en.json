@@ -53,6 +53,28 @@
       "announce": {
         "name": "Announce"
       }
+    },
+    "number": {
+      "voice_volume": {
+        "name": "Voice volume"
+      },
+      "music_volume": {
+        "name": "Music volume"
+      },
+      "screen_brightness": {
+        "name": "Screen brightness"
+      }
+    },
+    "switch": {
+      "screen": {
+        "name": "Screen"
+      },
+      "side_lights": {
+        "name": "Side lights"
+      },
+      "music_side_lights": {
+        "name": "Music side lights"
+      }
     }
   },
   "services": {
@@ -95,6 +117,21 @@
     },
     "announce_failed": {
       "message": "The Codie refused the announcement: {error}"
+    },
+    "setting_cannot_connect": {
+      "message": "Could not reach the Codie. Check that it is awake and on the network."
+    },
+    "setting_auth_failed": {
+      "message": "The Codie no longer accepts Home Assistant. Pair it again from the integration page."
+    },
+    "setting_not_confirmed": {
+      "message": "The Codie received the change but could not confirm it: {error}"
+    },
+    "setting_failed": {
+      "message": "The Codie refused the change: {error}"
+    },
+    "setting_music_volume_failed": {
+      "message": "The Codie could not set the Music volume: {error}"
     }
   }
 }

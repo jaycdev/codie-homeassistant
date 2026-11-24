@@ -28,10 +28,18 @@ Pairing is done once per Codie. It gives Home Assistant lasting credentials for 
 3. Enter the Codie's IP address or hostname (you can find it in your router) and the port. Leave the port at 8081 unless you changed it.
 4. The Codie shows a six-digit code. Enter it in Home Assistant within 5 minutes.
 
-The Codie is added as a device with two entities:
+The Codie is added as a device with these entities:
 
 - **Connected** (binary sensor): on while Home Assistant is connected to the Codie and serving its Tools. While it is off, new conversations with the Character have no home-control Tools.
 - **Announce** (notify): see [Announcements](#announcements).
+- **Voice volume** (number, 0–100): how loud the Character speaks, Announcements included. It follows the active Slot: it shows and sets the volume of the Character in that Slot, so it changes when you switch Slots.
+- **Music volume** (number, 0–100): how loud the Codie plays music. One level for the whole Codie. It works without the music page open. The Codie only queues the change, so Home Assistant asks it for up to three seconds whether the change ran. The action succeeds once the Codie reports that it applied the change. The Codie has 11 volume steps (0, 9, 18, 27 … 90, 100), so Home Assistant sets the step nearest the level you choose: 40 becomes 36, and 41 becomes 45. It fails if the Codie reports an error, or says nothing within three seconds and its Music volume is not in that step. Unavailable while the Codie's music player is not ready.
+- **Screen** (switch): turns the Codie's screen on and off. It is unknown when the Codie's two screens disagree. If the Codie sent the change but could not confirm it, the action fails.
+- **Screen brightness** (number, 0–100 %, configuration): unavailable while the Codie reports that its brightness cannot be set.
+- **Side lights** (switch, configuration): the LED strip whenever the Codie is not in Music mode.
+- **Music side lights** (switch, configuration): the LED strip while the Codie is in Music mode. It is switched separately from Side lights.
+
+Home Assistant reads these settings every 30 seconds and again right after it changes one. They are all unavailable while the Codie can't be reached. If the Codie fails to give one setting, only that one is unavailable. The Codie works without them, so a Codie whose settings can't be read still starts.
 
 You can pair several Codies, one entry each. Removing an entry also removes its Tools from the Codie.
 
@@ -73,6 +81,11 @@ The Character only sees and controls **Exposed entities**: the entities you expo
 To make requests easier to match, give entities clear names, assign them to areas, and add aliases (open the entity, then **Voice assistants**).
 
 Remember the [warning above](#code27-codie-for-home-assistant): anything exposed can be operated by the Character without confirmation.
+
+## Screen switch and Assist
+
+> [!WARNING]
+> If you expose the **Screen** switch to Assist, the Character can turn its own screen off, for example when you say "Hey Codie, turn off your screen". A Codie with its screen off blocks conversations and Announcements. Only Home Assistant or the Codie itself can turn the screen back on. Leave the Screen switch unexposed unless you accept this.
 
 ## Announcements
 
