@@ -66,7 +66,7 @@ async def async_get_config_entry_diagnostics(
             else {
                 "revision": catalog.revision,
                 "tools": {tool["name"]: tool["version"] for tool in catalog.tools},
-                "left_out": catalog.left_out,
+                "left_out": {name: left.reason for name, left in catalog.left_out.items()},
             },
             "settings": {
                 "last_update_success": settings.last_update_success,

@@ -187,7 +187,7 @@ async def test_reports_a_tool_left_out_for_its_schema(
     registrar = entry.runtime_data.registrar
     assert registrar.catalog is not None
     tools = registrar.catalog.tools
-    assert registrar.catalog.left_out["turn_on"] == "Assist tool HassTurnOn is not available"
+    assert registrar.catalog.left_out["turn_on"].reason == "Assist tool HassTurnOn is not available"
 
     # HassTurnOn arrives, but with a parameter the Codie cannot take, so turn_on stays out:
     # the Tools are unchanged and only the reason differs.

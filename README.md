@@ -70,7 +70,7 @@ The Character can call these Tools. Each one runs one of Home Assistant's own As
 | `timer_start` | Starts a [Timer](#timers): a Command to run after a delay. | None: the integration runs it |
 | `timer_control` | Cancels a running Timer, or says how much time is left on one or all of them, by its `action`. | None: the integration runs it |
 
-The list is fixed. A Tool is left out if your Home Assistant doesn't have its Assist tool, or if the tool's parameters don't fit the Codie's limits. Nothing replaces it. The Timer Tools are left out too if Home Assistant's built-in agent doesn't support the Codie's AI language. Exposed scripts are not Tools of their own: the Character runs them through `turn_on`, without their fields, and `turn_on`'s description lists their names so the Character can find them. The Codie allows at most 16 Tools per integration, and a list that changed with your setup would make the Character's abilities hard to predict. The catalog has 15 Tools. One place is left free on purpose, for a Tool added later.
+The list is fixed. A Tool is left out if your Home Assistant doesn't have its Assist tool, or if the tool's parameters don't fit the Codie's limits. Nothing replaces it. Most Assist tools come with the integration for their kind of device, so without a vacuum, for example, there is no `vacuum_start`. That is expected and raises nothing. **Settings → Repairs** does show an issue when a tool's parameters don't fit, or when `turn_on`, `turn_off` or `set_position` is missing, because those come with Home Assistant itself. The Timer Tools are left out too if Home Assistant's built-in agent doesn't support the Codie's AI language. Exposed scripts are not Tools of their own: the Character runs them through `turn_on`, without their fields, and `turn_on`'s description lists their names so the Character can find them. The Codie allows at most 16 Tools per integration, and a list that changed with your setup would make the Character's abilities hard to predict. The catalog has 15 Tools. One place is left free on purpose, for a Tool added later.
 
 The Character keeps the Tools it had when a conversation started. After a change, such as a Home Assistant restart or upgrade, or an integration that adds Assist tools, start a new conversation to get the new Tools.
 
@@ -194,7 +194,8 @@ These blueprints make automations for common Announcements. Import one, then cre
 ## Troubleshooting
 
 - **Connected is off.** Check that the Codie is awake and on the network. Home Assistant keeps retrying with a growing delay.
-- **"The clock of Home Assistant and the Codie differ too much" in the log.** Every request is signed with the time. Check that the time is correct on both.
+- **A repair issue says the clocks differ** (and "The clock of Home Assistant and the Codie differ too much" is in the log). Every request is signed with the time. Check that the time is correct on both, for example that network time (NTP) works on the machine running Home Assistant. The issue goes away once a request works again.
+- **A repair issue says the Codie refused the Tools.** The Character has no home-control Tools until the Codie accepts them. Check for an update of the integration or the Codie, and report the error the issue shows if it keeps happening.
 - **The Character doesn't know a device.** Check that it is exposed, then start a new conversation. Calling `get_home_state` shows what the Character can see.
 
 For more detail, turn on debug logging:
