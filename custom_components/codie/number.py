@@ -10,12 +10,12 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
 from . import CodieConfigEntry
-from .entity import CodieSettingDescription, CodieSettingEntity
+from .entity import CodieWritableSettingDescription, CodieWritableSettingEntity
 from .settings import SettingGroup, async_set_music_volume
 
 
 @dataclass(frozen=True, kw_only=True)
-class CodieNumberDescription(NumberEntityDescription, CodieSettingDescription[int]):
+class CodieNumberDescription(NumberEntityDescription, CodieWritableSettingDescription[int]):
     """A number backed by one of the Codie's settings."""
 
 
@@ -59,7 +59,7 @@ async def async_setup_entry(
     )
 
 
-class CodieNumber(CodieSettingEntity[int], NumberEntity):
+class CodieNumber(CodieWritableSettingEntity[int], NumberEntity):
     """A setting of the Codie between 0 and 100."""
 
     _attr_native_min_value = 0

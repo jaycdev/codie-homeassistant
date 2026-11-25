@@ -11,12 +11,12 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
 from . import CodieConfigEntry
-from .entity import CodieSettingDescription, CodieSettingEntity
+from .entity import CodieWritableSettingDescription, CodieWritableSettingEntity
 from .settings import SettingGroup
 
 
 @dataclass(frozen=True, kw_only=True)
-class CodieSwitchDescription(SwitchEntityDescription, CodieSettingDescription[bool]):
+class CodieSwitchDescription(SwitchEntityDescription, CodieWritableSettingDescription[bool]):
     """A switch backed by one of the Codie's settings."""
 
 
@@ -60,7 +60,7 @@ async def async_setup_entry(
     )
 
 
-class CodieSwitch(CodieSettingEntity[bool], SwitchEntity):
+class CodieSwitch(CodieWritableSettingEntity[bool], SwitchEntity):
     """An on/off setting of the Codie."""
 
     entity_description: CodieSwitchDescription
