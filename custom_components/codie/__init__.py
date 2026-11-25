@@ -114,9 +114,20 @@ async def async_setup_entry(hass: HomeAssistant, entry: CodieConfigEntry) -> boo
     async def announce(message: str) -> None:
         await async_announce(client, message, partial(entry.async_start_reauth, hass))
 
-    timers = CodieTimers(hass, timers_store(hass, entry.entry_id), language, announce)
+    # The Tools and Timers pass the device's id to Assist, so a request or Command that names no
+    # Area acts on the Codie's.
+    device = dr.async_get(hass).async_get_or_create(
+        config_entry_id=entry.entry_id,
+        identifiers={(DOMAIN, entry.unique_id)},
+        manufacturer="CODE27",
+        model="Codie",
+        name=entry.title,
+    )
+    timers = CodieTimers(hass, timers_store(hass, entry.entry_id), language, device.id, announce)
     await timers.async_load()
-    recorder = ToolRecorder(hass, entry, partial(async_call_tool, hass, language, timers))
+    recorder = ToolRecorder(
+        hass, entry, partial(async_call_tool, hass, language, device.id, timers)
+    )
     executor = CodieExecutor(
         client,
         integration_id,
@@ -133,13 +144,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: CodieConfigEntry) -> boo
         client=client, registrar=registrar, executor=executor, settings=settings, timers=timers
     )
 
-    dr.async_get(hass).async_get_or_create(
-        config_entry_id=entry.entry_id,
-        identifiers={(DOMAIN, entry.unique_id)},
-        manufacturer="CODE27",
-        model="Codie",
-        name=entry.title,
-    )
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 
     async def refresh_catalog() -> None:

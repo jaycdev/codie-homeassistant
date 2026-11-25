@@ -76,6 +76,19 @@ The Character keeps the Tools it had when a conversation started. After a change
 
 The Character understands and replies in the Codie's AI language, set on the Codie. Home Assistant reads it when the integration starts. If you change it, reload the integration.
 
+## Assign the Codie to an area
+
+Assign the Codie's device to the area it sits in: open it under **Settings → Devices & services → CODE27 Codie**, select the pencil, and choose an **Area**. The Character then knows which room "here" is, as a Home Assistant voice satellite does:
+
+- A request that names no device, area or floor acts only on the devices in the Codie's area, for lights, fans, covers and media players. "Turn off the lights", "close the blinds", "set the fan to 50%" and "set the volume to 30" all stay in the room. The Codie's own Music player is in that area too, so "set the volume" includes it. This applies to `turn_on`, `turn_off`, `light_set`, `set_position`, `fan_set_speed` and `set_volume`.
+- Other kinds of device are never narrowed this way. "Lock the doors" or a `turn_on` that names no kind of device still acts on every Exposed match in the home.
+- When a name matches devices in several areas, such as two lamps called "Lamp", the one in the Codie's area is chosen instead of asking which one.
+- A Timer's Command is run the same way, so "turn off the lights in 20 minutes" turns off the lights in the Codie's area.
+
+To act on the whole home, say so: for "turn off all the lights" the Character is told to use the name `all`, which reaches every Exposed light. A request that names a device, an area or a floor works as before, wherever it is. If nothing in the Codie's area matches, the Character is told the request was limited to that area and how to reach the rest.
+
+If the Codie has no area, a request that names none acts on every Exposed match, as before. You can move the Codie to another area at any time; the next request uses the new one.
+
 ## Timers
 
 A Timer makes the Character act on the home later: "Hey Codie, turn off the kitchen lamp in 20 minutes". The Character sets it with `timer_start`, giving a **Command** (a short home-control sentence such as "turn off the kitchen lamp"), a delay and, if it wants, a name. When the Timer ends, Home Assistant runs the Command.
@@ -101,7 +114,7 @@ Nothing else in Home Assistant records the Tool calls the Character makes, so th
 - `device_id`: The Codie's device id, to filter on when you have several Codies. `null` if the device is missing.
 - `tool`: The Tool's name, such as `turn_off`. It is whatever name the Codie sent, so it can be one that does not exist.
 - `assist_tool`: The Assist tool the Tool maps to, such as `HassTurnOff`. For `media_control` it is the one the call's `action` selects. `null` for the Timer Tools, for an unknown Tool and for an invalid `action`.
-- `arguments`: The arguments the Character gave, as received.
+- `arguments`: The arguments the call ran with: those the Character gave, plus the `area` the integration added when the request was limited to the [Codie's area](#assign-the-codie-to-an-area).
 - `success`: `true` if the call succeeded.
 - `error`: The error code if it failed, otherwise `null`. For example `target_not_found`, `ambiguous_target`, `invalid_arguments`, `tool_unavailable`, `unknown_tool`, `timeout` or `internal_error`.
 - `entity_ids`: The entities the call acted on, as a list, when Home Assistant says which. Empty for a failed call and for Tools that do not act on entities.
