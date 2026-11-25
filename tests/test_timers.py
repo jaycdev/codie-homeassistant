@@ -22,7 +22,12 @@ from pytest_homeassistant.common import MockConfigEntry, async_fire_time_changed
 
 from custom_components.codie.const import DOMAIN
 from custom_components.codie.errors import ToolError
-from custom_components.codie.timers import CodieTimers, timers_store
+from custom_components.codie.timers import (
+    FAILURE_MESSAGES,
+    CodieTimers,
+    failure_message,
+    timers_store,
+)
 
 from .fake_codie import FakeCodie
 from .test_tool_list import add_entity, setup_assist
@@ -163,9 +168,7 @@ async def test_a_failure_without_speech_is_announced_in_english(
         await elapse(hass, minutes=21)
 
     (utterance,) = codie.utterances
-    assert utterance["text"] == (
-        "I couldn't turn off the kitchen lamp: Home Assistant could not do it"
-    )
+    assert utterance["text"] == "I couldn't turn off the kitchen lamp."
 
 
 async def test_a_command_that_succeeds_is_not_announced(
@@ -182,17 +185,110 @@ async def test_a_command_that_succeeds_is_not_announced(
     assert not codie.utterances
 
 
-async def test_a_command_that_raises_is_announced(hass: HomeAssistant, codie: FakeCodie) -> None:
+async def test_a_command_that_raises_is_announced_and_its_reason_logged(
+    hass: HomeAssistant, codie: FakeCodie, caplog: pytest.LogCaptureFixture
+) -> None:
     await start_codie(hass, codie)
     await call(codie, "timer_start", command="turn off the kitchen lamp", minutes=20)
 
-    with patch(
-        "custom_components.codie.timers.async_converse", side_effect=HomeAssistantError("boom")
+    with (
+        patch(
+            "custom_components.codie.timers.async_converse",
+            side_effect=HomeAssistantError("boom"),
+        ),
+        caplog.at_level(logging.WARNING),
     ):
         await elapse(hass, minutes=21)
 
     (utterance,) = codie.utterances
-    assert utterance["text"] == "I couldn't turn off the kitchen lamp: boom"
+    # The exception text is for the log, not for the Character to say.
+    assert utterance["text"] == "I couldn't turn off the kitchen lamp."
+    assert "boom" in caplog.text
+
+
+async def start_timers_in(
+    hass: HomeAssistant, language: str, command: str
+) -> tuple[CodieTimers, AsyncMock]:
+    """Timers of a Codie whose AI language is `language`, with one Timer of `command` set.
+
+    The Command check is skipped: the built-in agent's sentences in `language` are not tested.
+    """
+    announce = AsyncMock()
+    timers = CodieTimers(hass, timers_store(hass, "entry"), language, announce)
+    with patch.object(timers, "_async_check", AsyncMock()):
+        await timers.async_start({"command": command, "minutes": 20})
+    return timers, announce
+
+
+JAPANESE_COMMAND = "キッチンのランプを消して"
+
+
+@pytest.mark.parametrize(
+    "converse",
+    [
+        {"return_value": agent_answer(failed=(LAMP,))},
+        {"side_effect": HomeAssistantError("Entity light.kitchen_lamp is not exposed")},
+    ],
+    ids=["no speech", "raised"],
+)
+async def test_a_failure_without_speech_is_announced_in_the_ai_language(
+    hass: HomeAssistant, caplog: pytest.LogCaptureFixture, converse: dict[str, Any]
+) -> None:
+    timers, announce = await start_timers_in(hass, "ja", JAPANESE_COMMAND)
+
+    with (
+        patch("custom_components.codie.timers.async_converse", **converse),
+        caplog.at_level(logging.WARNING),
+    ):
+        await elapse(hass, minutes=21)
+
+    announce.assert_awaited_once_with("「キッチンのランプを消して」を実行できませんでした。")
+    ((message,), _) = announce.await_args_list[0]
+    assert message != failure_message("en", JAPANESE_COMMAND)
+    assert "not exposed" not in message
+    assert JAPANESE_COMMAND in caplog.text
+    timers.async_unload()
+
+
+async def test_a_failure_with_speech_is_announced_unchanged_in_any_language(
+    hass: HomeAssistant,
+) -> None:
+    timers, announce = await start_timers_in(hass, "ja", JAPANESE_COMMAND)
+
+    with patch(
+        "custom_components.codie.timers.async_converse",
+        return_value=agent_answer("キッチンのランプは公開されていません", failed=(LAMP,)),
+    ):
+        await elapse(hass, minutes=21)
+
+    announce.assert_awaited_once_with("キッチンのランプは公開されていません")
+    timers.async_unload()
+
+
+@pytest.mark.parametrize(
+    ("language", "message"),
+    [
+        ("en", "I couldn't turn off {the} lamp."),
+        ("de", "Ich konnte „turn off {the} lamp“ nicht ausführen."),
+        ("fr-CA", "Je n'ai pas pu exécuter « turn off {the} lamp »."),
+        ("zh", "我无法执行“turn off {the} lamp”。"),
+        ("zh-TW", "我無法執行「turn off {the} lamp」。"),
+        ("zh_Hant_HK", "我無法執行「turn off {the} lamp」。"),
+        ("xx", "I couldn't turn off {the} lamp."),
+        (None, "I couldn't turn off {the} lamp."),
+    ],
+)
+def test_the_failure_message_follows_the_language_and_keeps_the_command_as_is(
+    language: str | None, message: str
+) -> None:
+    assert failure_message(language, "turn off {the} lamp") == message
+
+
+def test_every_failure_message_holds_the_command_once() -> None:
+    for language, template in FAILURE_MESSAGES.items():
+        assert template.count("{command}") == 1, language
+        assert template.replace("{command}", "").count("{") == 0, language
+        assert failure_message(language, "X") == template.replace("{command}", "X")
 
 
 async def test_a_failure_is_logged_when_the_codie_cannot_say_it(
