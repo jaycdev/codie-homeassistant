@@ -8,3 +8,4 @@ We only combine intents that take the same arguments. An argument that applies t
 
 - A combined Tool's schema and description are ours, not Assist's, so we maintain them when Assist's intents change.
 - Exposed scripts still get no Tool of their own. `turn_on` runs an exposed script, but cannot pass the script's fields. Its description lists the exposed scripts' names, because the live context leaves scripts out and the Character could not otherwise find them, so the catalog changes when a script is exposed, added or renamed.
+- The Tools that act on every match (`turn_on`, `turn_off`, `light_set`, `set_position`, `fan_set_speed`, `set_volume`) are limited to the Codie's area when a call names no entity, area or floor, for lights, fans, covers and media players only, because Assist tells only its own model that "turn on the lights" means this room. The name `all` reaches the whole home.

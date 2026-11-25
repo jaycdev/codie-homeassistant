@@ -58,8 +58,22 @@ REGISTER_ATTEMPTS = 3
 ASSIST_LIVE_CONTEXT = "GetLiveContext"
 ASSIST_TODO_GET_ITEMS = "todo_get_items"
 
-# The intents that act on every match, so a request that names no target needs an Area.
-_IN_AREA_INTENTS = frozenset({"HassTurnOn", "HassTurnOff", "HassLightSet", "HassSetPosition"})
+# The intents that act on every match, with the domain they act on when a call names none.
+_IN_AREA_INTENTS: dict[str, str | None] = {
+    "HassTurnOn": None,
+    "HassTurnOff": None,
+    "HassSetPosition": None,
+    "HassLightSet": "light",
+    "HassFanSetSpeed": "fan",
+    "HassSetVolume": "media_player",
+}
+# The domains Home Assistant's own voice satellites limit to their area when no target is named.
+# Others, such as locks and switches, are never narrowed: "unlock" must not quietly mean less.
+_AREA_DOMAINS = frozenset({"light", "fan", "cover", "media_player"})
+AREA_HINT = (
+    "Leave name, area and floor out to act on the Codie's own area, for lights, fans, covers "
+    "and media players. Use name 'all' for the whole home."
+)
 
 # Every Tool returns this one small shape. Assist's own results are reduced to it.
 _ASSIST_RESULT_SCHEMA: dict[str, Any] = {
@@ -335,6 +349,8 @@ async def _assist_definition(
         schema = from_probatio(parameters, serializer)
         for name in tool.hidden:
             schema["properties"].pop(name, None)
+        if assist_name in _IN_AREA_INTENTS and "area" in schema["properties"]:
+            schema["properties"]["area"]["description"] = AREA_HINT
         if tool.actions:
             schema["properties"]["action"] = {"type": "string", "enum": list(actions)}
             schema.setdefault("required", []).append("action")
@@ -453,11 +469,13 @@ async def async_call_tool(
     name: str,
     arguments: dict[str, Any],
     affected: list[str] | None = None,
+    added: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Run a Tool and return the result data; Timer Tools go to `timers`, the rest to Assist.
 
-    `device_id` is the Codie's device, so a request that names no Area acts on the Codie's.
-    The ids of the entities the call acted on are added to `affected`, for the record of the call.
+    `device_id` is the Codie's device, so a request that names no area can act on the Codie's.
+    The ids of the entities the call acted on are added to `affected`, and the arguments the
+    integration added, such as that area, to `added`, for the record of the call.
     """
     tool = find_tool(name)
     if tool is None:
@@ -477,6 +495,7 @@ async def async_call_tool(
             f"action must be one of {', '.join(tool.actions)}",
         )
     arguments.pop("action", None)
+    area: ar.AreaEntry | None = None
     try:
         api_tools, _ = await _assist_api_tools(hass, language)
         assist_tool = await _assist_tool(hass, assist_name, api_tools)
@@ -488,7 +507,11 @@ async def async_call_tool(
                 tool.unavailable
                 or f"{assist_name} is not available; no exposed entity supports it",
             )
-        arguments = _in_codies_area(hass, device_id, assist_name, _visible(tool, arguments))
+        arguments = _visible(tool, arguments)
+        if (area := _codies_area(hass, device_id, assist_name, arguments)) is not None:
+            arguments["area"] = area.id
+            if added is not None:
+                added["area"] = area.id
         raw = await assist_tool.async_call(
             hass, llm.ToolInput(assist_tool.name, arguments), context
         )
@@ -500,6 +523,13 @@ async def async_call_tool(
             raise ToolNeedsClarification(
                 ERROR_AMBIGUOUS_TARGET,
                 f"More than one exposed entity matches {err.result.no_match_name or 'that'}",
+            ) from err
+        if area is not None:
+            raise ToolError(
+                ERROR_TARGET_NOT_FOUND,
+                f"Nothing exposed in the Codie's area {area.name} matches that request: one that "
+                "names no area is limited to the Codie's. To act elsewhere, name an area or "
+                "floor, or use the name 'all' for the whole home.",
             ) from err
         raise ToolError(
             ERROR_TARGET_NOT_FOUND,
@@ -599,23 +629,29 @@ def _list_names(intro: str, names: list[str]) -> str:
     return intro + "..."
 
 
-def _in_codies_area(
+def _codies_area(
     hass: HomeAssistant, device_id: str | None, assist_name: str, arguments: dict[str, Any]
-) -> dict[str, Any]:
-    """`arguments` aimed at the Codie's Area when they name no entity, Area or floor.
+) -> ar.AreaEntry | None:
+    """The Codie's area, if a call with `arguments` is to be limited to it.
 
     Assist tells its own model that "turn on the lights" means the lights in the room it is
-    in; the Character's model never hears that, so the Area is added here. The other intents
-    pick one target, using the Area from the context to choose between several, or act on
-    whatever is playing, wherever it is.
+    in; the Character's model never hears that, so the area is added here. Only for intents
+    that act on every match, when the call names no entity, area or floor, and only for the
+    domains Home Assistant's own voice satellites limit the same way. The other intents pick
+    one target, using the area from the context to choose between several, or act on whatever
+    is playing, wherever it is.
     """
     if assist_name not in _IN_AREA_INTENTS:
-        return arguments
+        return None
     if any(arguments.get(key) for key in ("name", "area", "floor")):
-        return arguments
+        return None
+    domain = arguments.get("domain") or _IN_AREA_INTENTS[assist_name]
+    domains = {domain} if isinstance(domain, str) else set(domain or ())
+    if not domains or not domains <= _AREA_DOMAINS:
+        return None
     device = dr.async_get(hass).async_get(device_id) if device_id else None
     area_id = dr.async_get_effective_area_id(hass, device) if device else None
-    return {**arguments, "area": area_id} if area_id else arguments
+    return ar.async_get(hass).async_get_area(area_id) if area_id else None
 
 
 def _visible(tool: CodieTool, arguments: dict[str, Any]) -> dict[str, Any]:

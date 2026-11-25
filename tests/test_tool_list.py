@@ -17,12 +17,14 @@ from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import area_registry as ar
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
+from homeassistant.helpers import floor_registry as fr
 from homeassistant.helpers import intent, llm, selector
 from homeassistant.setup import async_setup_component
-from pytest_homeassistant.common import async_mock_service
+from pytest_homeassistant.common import async_capture_events, async_mock_service
 
 from custom_components.codie.schema import check_limits
-from custom_components.codie.tools import MAX_DESCRIPTION_CHARS
+from custom_components.codie.tool_events import EVENT_TOOL_CALLED
+from custom_components.codie.tools import AREA_HINT, MAX_DESCRIPTION_CHARS
 
 from .fake_codie import FakeCodie
 from .test_tools import INTEGRATION_ID, setup, wait_connected
@@ -262,6 +264,29 @@ async def test_a_name_no_area_tells_apart_fails_and_says_how_to_fix_it(
     assert calls == []
 
 
+async def start_in_area(hass: HomeAssistant, fake: FakeCodie, area_name: str | None) -> None:
+    """Set up the Codie, and put its device in the area `area_name` unless it is None."""
+    entry = await setup(hass, fake)
+    await wait_connected(hass, fake, True)
+    if area_name:
+        devices = dr.async_get(hass)
+        (codie,) = dr.async_entries_for_config_entry(devices, entry.entry_id)
+        area = ar.async_get(hass).async_get_or_create(area_name)
+        devices.async_update_device(codie.id, area_id=area.id)
+
+
+def acted_on(calls: list[Any]) -> list[str]:
+    """The entity ids the service calls acted on; a call names one or a list."""
+    ids = [call.data["entity_id"] for call in calls]
+    return sorted(e for i in ids for e in ([i] if isinstance(i, str) else i))
+
+
+async def add_office_and_kitchen_lights(hass: HomeAssistant) -> None:
+    await setup_assist(hass)
+    put_in_area(hass, add_entity(hass, "light", "desk_lamp", True), "Office")
+    put_in_area(hass, add_entity(hass, "light", "pendant", True), "Kitchen")
+
+
 @pytest.mark.parametrize(
     ("codie_area", "turned_off"),
     [("Office", ["light.desk_lamp"]), (None, ["light.desk_lamp", "light.pendant"])],
@@ -269,23 +294,126 @@ async def test_a_name_no_area_tells_apart_fails_and_says_how_to_fix_it(
 async def test_a_request_that_names_no_area_acts_on_the_codies_area(
     hass: HomeAssistant, fake_codie: FakeCodie, codie_area: str | None, turned_off: list[str]
 ) -> None:
-    # "Turn off the lights": a Codie with no Area acts on them all, as before.
-    await setup_assist(hass)
-    put_in_area(hass, add_entity(hass, "light", "desk_lamp", True), "Office")
-    put_in_area(hass, add_entity(hass, "light", "pendant", True), "Kitchen")
+    # "Turn off the lights": a Codie with no area acts on them all, as before.
+    await add_office_and_kitchen_lights(hass)
     calls = async_mock_service(hass, "light", "turn_off")
-    entry = await setup(hass, fake_codie)
-    await wait_connected(hass, fake_codie, True)
-    if codie_area:
-        devices = dr.async_get(hass)
-        (codie,) = dr.async_entries_for_config_entry(devices, entry.entry_id)
-        area = ar.async_get(hass).async_get_or_create(codie_area)
-        devices.async_update_device(codie.id, area_id=area.id)
+    events = async_capture_events(hass, EVENT_TOOL_CALLED)
+    await start_in_area(hass, fake_codie, codie_area)
 
     result = await fake_codie.invoke(INTEGRATION_ID, "turn_off", {"domain": ["light"]})
 
     assert result["status"] == "succeeded"
-    assert sorted(e for c in calls for e in c.data["entity_id"]) == turned_off
+    assert acted_on(calls) == turned_off
+    # The event shows the arguments that ran, the added area included.
+    area = ar.async_get(hass).async_get_area_by_name(codie_area) if codie_area else None
+    expected = {"domain": ["light"], **({"area": area.id} if area else {})}
+    assert [event.data["arguments"] for event in events] == [expected]
+
+
+@pytest.mark.parametrize(
+    "target",
+    [{"area": "Kitchen"}, {"floor": "Ground floor"}, {"name": "all"}],
+    ids=["area", "floor", "all"],
+)
+async def test_a_request_that_names_an_area_floor_or_all_is_not_narrowed(
+    hass: HomeAssistant, fake_codie: FakeCodie, target: dict[str, str]
+) -> None:
+    await add_office_and_kitchen_lights(hass)
+    floor = fr.async_get(hass).async_create("Ground floor")
+    areas = ar.async_get(hass)
+    kitchen = areas.async_get_or_create("Kitchen")
+    areas.async_update(kitchen.id, floor_id=floor.floor_id)
+    calls = async_mock_service(hass, "light", "turn_off")
+    await start_in_area(hass, fake_codie, "Office")
+
+    result = await fake_codie.invoke(INTEGRATION_ID, "turn_off", {"domain": ["light"], **target})
+
+    assert result["status"] == "succeeded"
+    whole_home = ["light.desk_lamp", "light.pendant"]
+    assert acted_on(calls) == (whole_home if target == {"name": "all"} else ["light.pendant"])
+
+
+async def test_a_lock_request_is_never_narrowed_to_the_codies_area(
+    hass: HomeAssistant, fake_codie: FakeCodie
+) -> None:
+    await setup_assist(hass)
+    assert await async_setup_component(hass, "lock", {})
+    put_in_area(hass, add_entity(hass, "lock", "office_door", True), "Office")
+    put_in_area(hass, add_entity(hass, "lock", "front_door", True), "Hall")
+    calls = async_mock_service(hass, "lock", "lock")
+    await start_in_area(hass, fake_codie, "Office")
+
+    result = await fake_codie.invoke(INTEGRATION_ID, "turn_on", {"domain": ["lock"]})
+
+    assert result["status"] == "succeeded"
+    assert acted_on(calls) == ["lock.front_door", "lock.office_door"]
+
+
+@pytest.mark.parametrize(
+    ("tool", "domain", "service", "arguments", "features"),
+    [
+        ("fan_set_speed", "fan", "turn_on", {"percentage": 50}, 1),
+        ("set_volume", "media_player", "volume_set", {"volume_level": 50}, 4),
+    ],
+)
+async def test_tools_that_act_on_every_match_are_narrowed_to_the_codies_area(
+    hass: HomeAssistant,
+    fake_codie: FakeCodie,
+    tool: str,
+    domain: str,
+    service: str,
+    arguments: dict[str, Any],
+    features: int,
+) -> None:
+    await setup_assist(hass)
+    for area_name in ("Office", "Kitchen"):
+        entity_id = add_entity(
+            hass, domain, f"{area_name.lower()}_{domain}", True, supported_features=features
+        )
+        put_in_area(hass, entity_id, area_name)
+    calls = async_mock_service(hass, domain, service)
+    await start_in_area(hass, fake_codie, "Office")
+
+    result = await fake_codie.invoke(INTEGRATION_ID, tool, arguments)
+
+    assert result["status"] == "succeeded"
+    # The Codie's own Music player is in the Office too, as part of the Codie's device.
+    assert f"{domain}.office_{domain}" in acted_on(calls)
+    assert f"{domain}.kitchen_{domain}" not in acted_on(calls)
+
+
+async def test_nothing_in_the_codies_area_says_the_request_was_limited_to_it(
+    hass: HomeAssistant, fake_codie: FakeCodie
+) -> None:
+    await setup_assist(hass)
+    put_in_area(hass, add_entity(hass, "fan", "ceiling_fan", True, supported_features=1), "Hall")
+    calls = async_mock_service(hass, "fan", "turn_on")
+    await start_in_area(hass, fake_codie, "Office")
+
+    result = await fake_codie.invoke(INTEGRATION_ID, "fan_set_speed", {"percentage": 50})
+
+    assert result["status"] == "failed"
+    assert result["code"] == "target_not_found"
+    assert "limited to the Codie's" in result["message"]
+    assert "area Office" in result["message"]
+    assert "'all'" in result["message"]
+    assert calls == []
+
+
+async def test_the_area_parameter_of_tools_that_act_on_every_match_explains_the_rule(
+    hass: HomeAssistant, fake_codie: FakeCodie
+) -> None:
+    await setup_assist(hass)
+    await start_in_area(hass, fake_codie, None)
+
+    areas = {
+        tool["name"]: tool["parameters"]["properties"].get("area", {}).get("description")
+        for tool in registered_tools(fake_codie)
+    }
+
+    for name in ("turn_on", "turn_off", "light_set", "set_position", "fan_set_speed", "set_volume"):
+        assert areas[name] == AREA_HINT
+    assert areas["climate_set_temp"] != AREA_HINT
 
 
 async def test_a_name_shared_across_areas_picks_the_one_in_the_codies_area(
@@ -296,12 +424,7 @@ async def test_a_name_shared_across_areas_picks_the_one_in_the_codies_area(
         lamp = add_entity(hass, "light", "lamp", True, unique_id=f"lamp_{area_name}")
         put_in_area(hass, lamp, area_name)
     calls = async_mock_service(hass, "light", "turn_on")
-    entry = await setup(hass, fake_codie)
-    await wait_connected(hass, fake_codie, True)
-    devices = dr.async_get(hass)
-    (codie,) = dr.async_entries_for_config_entry(devices, entry.entry_id)
-    bedroom = ar.async_get(hass).async_get_or_create("Bedroom")
-    devices.async_update_device(codie.id, area_id=bedroom.id)
+    await start_in_area(hass, fake_codie, "Bedroom")
 
     result = await fake_codie.invoke(INTEGRATION_ID, "turn_on", {"name": "lamp"})
 

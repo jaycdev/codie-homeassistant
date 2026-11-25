@@ -25,7 +25,7 @@ EVENT_TOOL_CALLED = f"{DOMAIN}_tool_called"
 EVENT_TOOL_LOGGED = f"{DOMAIN}_tool_logged"
 
 # What `async_call_tool` takes after the Tool's name and arguments.
-RunTool = Callable[[str, dict[str, Any], list[str]], Awaitable[dict[str, Any]]]
+RunTool = Callable[[str, dict[str, Any], list[str], dict[str, Any]], Awaitable[dict[str, Any]]]
 
 
 class ToolCallData(TypedDict):
@@ -50,6 +50,8 @@ class ToolLoggedData(ToolCallData):
 # The entities the running call acted on. Each call runs in its own task, and the executor reports
 # the outcome in that task, so this is the call's own list.
 _affected: ContextVar[list[str]] = ContextVar("codie_affected_entity_ids")
+# The arguments the integration added to the running call, such as the Codie's area.
+_added: ContextVar[dict[str, Any]] = ContextVar("codie_added_arguments")
 
 
 class ToolRecorder:
@@ -61,10 +63,12 @@ class ToolRecorder:
         self._run = run
 
     async def async_handle(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
-        """Run the Tool, noting the entities it acted on for `record`."""
+        """Run the Tool, noting the entities it acted on and the arguments it added for `record`."""
         affected: list[str] = []
+        added: dict[str, Any] = {}
         _affected.set(affected)
-        return await self._run(name, arguments, affected)
+        _added.set(added)
+        return await self._run(name, arguments, affected, added)
 
     def record(self, name: str, arguments: dict[str, Any], error: str | None) -> None:
         """Fire the events for a finished call. `error` is the code it failed with, if it did.
@@ -83,6 +87,8 @@ class ToolRecorder:
         # The Codie sends whatever it likes, so anything but an object counts as no arguments.
         if not isinstance(arguments, dict):
             arguments = {}
+        # The arguments that ran, which is what an automation needs to see.
+        arguments = {**arguments, **_added.get({})}
         tool = find_tool(name)
         device = dr.async_get(self._hass).async_get_device_by_identifier(
             (DOMAIN, str(self._entry.unique_id)), self._entry.entry_id
