@@ -7,4 +7,4 @@ We only combine intents that take the same arguments. An argument that applies t
 ## Consequences
 
 - A combined Tool's schema and description are ours, not Assist's, so we maintain them when Assist's intents change.
-- Exposed scripts still get no Tool of their own. `turn_on` runs an exposed script, but cannot pass the script's fields.
+- Exposed scripts still get no Tool of their own. `turn_on` runs an exposed script, but cannot pass the script's fields. Its description lists the exposed scripts' names, because the live context leaves scripts out and the Character could not otherwise find them, so the catalog changes when a script is exposed, added or renamed.

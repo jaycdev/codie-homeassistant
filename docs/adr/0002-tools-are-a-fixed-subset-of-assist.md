@@ -6,5 +6,5 @@ The Tools offered to the Character are Home Assistant's own Assist LLM tools (tu
 
 ## Consequences
 
-- Exposed scripts are not offered as Tools, even though Assist offers them. Revisit in a later version.
+- Exposed scripts are not offered as Tools, even though Assist offers them. Revisit in a later version. (Revisited in ADR-0003: `turn_on` runs them and lists their names.)
 - The Expose list is the only safety control. Locks, alarms and garage doors are not singled out and nothing asks for confirmation, so the user should not expose anything the Character must not operate unprompted.

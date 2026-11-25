@@ -3,8 +3,16 @@
 from collections.abc import AsyncGenerator
 
 import pytest
+from homeassistant.core import HomeAssistant
+from homeassistant.setup import async_setup_component
 
 from .fake_codie import FakeCodie
+
+
+@pytest.fixture(autouse=True)
+async def core_loaded(hass: HomeAssistant) -> None:
+    """The Expose list lives in `homeassistant`, which is always loaded for real."""
+    assert await async_setup_component(hass, "homeassistant", {})
 
 
 @pytest.fixture

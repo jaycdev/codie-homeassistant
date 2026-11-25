@@ -143,6 +143,8 @@ class FakeCodie:
         default_factory=lambda: {1: 10, 2: 20, 3: 30, 4: 40, 5: 50}
     )
     music_volume: int = 55
+    # The language the Character speaks, which `/data/user/system` reports.
+    ai_language: str = "ja"
     # What `volume_max` says; the real Codie reports 100 once its music player is ready.
     music_volume_max: int | None = 100
     # SET_VOLUME is queued: it takes effect on this many playback reads after the POST. None:
@@ -452,7 +454,7 @@ class FakeCodie:
                     "user_id": self.user_id,
                     "username": self.username,
                     "language": "en",
-                    "ai_language": "ja",
+                    "ai_language": self.ai_language,
                     "timezone": "Europe/London",
                     "capabilities": {},
                 },

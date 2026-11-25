@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass
 from types import SimpleNamespace
 from typing import Any
@@ -20,6 +21,7 @@ from homeassistant.setup import async_setup_component
 from pytest_homeassistant.common import async_mock_service
 
 from custom_components.codie.schema import check_limits
+from custom_components.codie.tools import MAX_DESCRIPTION_CHARS
 
 from .fake_codie import FakeCodie
 from .test_tools import INTEGRATION_ID, setup, wait_connected
@@ -32,15 +34,14 @@ ALL_TOOLS = {
     "climate_set_temp",
     "set_position",
     "fan_set_speed",
-    "media_pause",
-    "media_unpause",
-    "media_next",
-    "media_previous",
+    "media_control",
     "set_volume",
     "media_search_play",
     "vacuum_start",
     "list_add_item",
     "todo_get_items",
+    "timer_start",
+    "timer_control",
 }
 READ_TOOLS = {"get_home_state", "todo_get_items"}
 
@@ -85,8 +86,9 @@ async def test_registers_the_full_fixed_list(hass: HomeAssistant, fake_codie: Fa
 
     tools = registered_tools(fake_codie)
     assert {t["name"] for t in tools} == ALL_TOOLS
-    assert len(tools) <= 16
+    assert len(tools) == 15
     for tool in tools:
+        assert re.fullmatch(r"[a-z][a-z0-9_]{0,23}", tool["name"])
         assert tool["risk"] == ("read" if tool["name"] in READ_TOOLS else "reversible")
         assert tool["confirmation_required"] is False
         assert tool["timeout_ms"] == 10000
@@ -657,3 +659,175 @@ async def test_a_missed_name_lists_the_aliases_assist_matches(
     for name in ("Jay TV", "Bedroom TV"):
         await fake_codie.invoke(INTEGRATION_ID, "turn_on", {"name": name})
     assert len(calls) == 1
+
+
+def tool_named(fake: FakeCodie, name: str) -> dict[str, Any]:
+    return next(t for t in registered_tools(fake) if t["name"] == name)
+
+
+async def test_media_control_offers_the_four_actions_and_the_assist_slots(
+    hass: HomeAssistant, fake_codie: FakeCodie
+) -> None:
+    await setup_assist(hass)
+    await setup(hass, fake_codie)
+
+    tool = tool_named(fake_codie, "media_control")
+
+    properties = tool["parameters"]["properties"]
+    assert properties["action"]["enum"] == ["pause", "resume", "next", "previous"]
+    assert "action" in tool["parameters"]["required"]
+    assert "name" in properties
+    assert len(tool["description"]) <= MAX_DESCRIPTION_CHARS
+
+
+@pytest.mark.parametrize(
+    ("action", "service"),
+    [
+        ("pause", "media_pause"),
+        ("resume", "media_play"),
+        ("next", "media_next_track"),
+        ("previous", "media_previous_track"),
+    ],
+)
+async def test_media_control_runs_the_intent_of_its_action(
+    hass: HomeAssistant, fake_codie: FakeCodie, action: str, service: str
+) -> None:
+    await setup_assist(hass)
+    player = add_entity(hass, "media_player", "Jay TV", True)
+    # Playing, and able to do all of it: the intents only match such a player.
+    hass.states.async_set(
+        player, "playing", {"friendly_name": "Jay TV", "supported_features": 0xFFFFFF}
+    )
+    services = ("media_pause", "media_play", "media_next_track", "media_previous_track")
+    calls = {name: async_mock_service(hass, "media_player", name) for name in services}
+    await setup(hass, fake_codie)
+    await wait_connected(hass, fake_codie, True)
+
+    result = await fake_codie.invoke(
+        INTEGRATION_ID, "media_control", {"action": action, "name": "Jay TV"}
+    )
+
+    assert result["status"] == "succeeded"
+    called = {name: [c.data["entity_id"] for c in found] for name, found in calls.items()}
+    assert called == {name: ([player] if name == service else []) for name in services}
+
+
+@pytest.mark.parametrize("arguments", [{"name": "Jay TV"}, {"action": "stop", "name": "Jay TV"}])
+async def test_media_control_needs_a_known_action(
+    hass: HomeAssistant, fake_codie: FakeCodie, arguments: dict[str, Any]
+) -> None:
+    await setup_assist(hass)
+    add_entity(hass, "media_player", "Jay TV", True)
+    await setup(hass, fake_codie)
+    await wait_connected(hass, fake_codie, True)
+
+    result = await fake_codie.invoke(INTEGRATION_ID, "media_control", arguments)
+
+    assert result["status"] == "failed"
+    assert result["code"] == "invalid_arguments"
+
+
+async def test_media_control_is_left_out_without_any_of_its_intents(
+    hass: HomeAssistant, fake_codie: FakeCodie
+) -> None:
+    await setup_assist(hass)
+    for name in ("HassMediaPause", "HassMediaUnpause", "HassMediaNext", "HassMediaPrevious"):
+        intent.async_remove(hass, name)
+
+    await setup(hass, fake_codie)
+
+    assert {t["name"] for t in registered_tools(fake_codie)} == ALL_TOOLS - {"media_control"}
+
+
+async def test_media_control_offers_only_the_actions_whose_intent_exists(
+    hass: HomeAssistant, fake_codie: FakeCodie
+) -> None:
+    await setup_assist(hass)
+    intent.async_remove(hass, "HassMediaPause")
+
+    await setup(hass, fake_codie)
+
+    tool = tool_named(fake_codie, "media_control")
+    assert tool["parameters"]["properties"]["action"]["enum"] == ["resume", "next", "previous"]
+
+
+async def test_turn_on_runs_an_exposed_script(hass: HomeAssistant, fake_codie: FakeCodie) -> None:
+    await setup_assist(hass)
+    script = add_entity(hass, "script", "Movie time", True)
+    calls = async_mock_service(hass, "script", "turn_on")
+    await setup(hass, fake_codie)
+    await wait_connected(hass, fake_codie, True)
+
+    result = await fake_codie.invoke(INTEGRATION_ID, "turn_on", {"name": "Movie time"})
+
+    assert result["status"] == "succeeded"
+    assert [c.data["entity_id"] for c in calls] == [[script]]
+
+
+async def test_get_home_state_answers_the_weather_from_an_exposed_entity(
+    hass: HomeAssistant, fake_codie: FakeCodie
+) -> None:
+    await setup_assist(hass)
+    weather = add_entity(hass, "weather", "Home weather", True)
+    hass.states.async_set(
+        weather,
+        "sunny",
+        {"friendly_name": "Home weather", "temperature": 21.5, "humidity": 40},
+    )
+    await setup(hass, fake_codie)
+    await wait_connected(hass, fake_codie, True)
+
+    result = await fake_codie.invoke(INTEGRATION_ID, "get_home_state", {})
+
+    assert result["status"] == "succeeded"
+    text = result["data"]["result"]
+    assert "Home weather" in text
+    assert "sunny" in text
+    assert "21.5" in text
+    assert "40" in text
+
+
+async def test_turn_on_lists_the_exposed_scripts(
+    hass: HomeAssistant, fake_codie: FakeCodie
+) -> None:
+    await setup_assist(hass)
+    add_entity(hass, "script", "Movie time", True)
+    add_entity(hass, "script", "Good night", True)
+    add_entity(hass, "script", "Secret script", False)
+    await setup(hass, fake_codie)
+
+    description = tool_named(fake_codie, "turn_on")["description"]
+
+    assert "Good night, Movie time" in description
+    assert "Secret script" not in description
+    assert len(description) <= MAX_DESCRIPTION_CHARS
+
+
+async def test_turn_on_keeps_assists_description_without_exposed_scripts(
+    hass: HomeAssistant, fake_codie: FakeCodie
+) -> None:
+    await setup_assist(hass)
+    add_entity(hass, "script", "Secret script", False)
+    await setup(hass, fake_codie)
+
+    description = tool_named(fake_codie, "turn_on")["description"]
+
+    assert description.startswith("Turns on/opens/presses a device or entity.")
+
+
+async def test_turn_on_cuts_a_long_list_of_scripts_between_names(
+    hass: HomeAssistant, fake_codie: FakeCodie
+) -> None:
+    await setup_assist(hass)
+    names = [f"Script number {n:02}" for n in range(30)]
+    for name in names:
+        add_entity(hass, "script", name, True)
+    await setup(hass, fake_codie)
+
+    description = tool_named(fake_codie, "turn_on")["description"]
+
+    assert len(description) <= MAX_DESCRIPTION_CHARS
+    assert description.endswith(", ...")
+    listed = description.removesuffix(", ...").split("Scripts: ")[1].split(", ")
+    assert listed == names[: len(listed)]
+    assert 0 < len(listed) < len(names)

@@ -58,21 +58,36 @@ The Character can call these Tools. Each one runs one of Home Assistant's own As
 | `climate_set_temp` | Sets the target temperature of a thermostat or AC. | HassClimateSetTemperature |
 | `set_position` | Sets the position of a cover or valve. | HassSetPosition |
 | `fan_set_speed` | Sets a fan's speed. | HassFanSetSpeed |
-| `media_pause` | Pauses a media player. | HassMediaPause |
-| `media_unpause` | Resumes a media player. | HassMediaUnpause |
-| `media_next` | Skips to the next track. | HassMediaNext |
-| `media_previous` | Goes back to the previous track. | HassMediaPrevious |
+| `media_control` | Pauses, resumes, or skips to the next or previous item of a media player, by its `action`. | HassMediaPause, HassMediaUnpause, HassMediaNext, HassMediaPrevious |
 | `set_volume` | Sets a media player's volume. | HassSetVolume |
 | `media_search_play` | Searches for media and plays it. | HassMediaSearchAndPlay |
 | `vacuum_start` | Starts a vacuum. | HassVacuumStart |
 | `list_add_item` | Adds an item to a shopping or to-do list. | HassListAddItem |
 | `todo_get_items` | Reads the items on a to-do list. | todo_get_items |
+| `timer_start` | Starts a [Timer](#timers): a Command to run after a delay. | None: the integration runs it |
+| `timer_control` | Cancels a running Timer, or says how much time is left on one or all of them, by its `action`. | None: the integration runs it |
 
-The list is fixed. A Tool is left out if your Home Assistant doesn't have its Assist tool, or if the tool's parameters don't fit the Codie's limits. Nothing replaces it. Exposed scripts are not Tools. The Codie allows at most 16 Tools per integration, and a list that changed with your setup would make the Character's abilities hard to predict.
+The list is fixed. A Tool is left out if your Home Assistant doesn't have its Assist tool, or if the tool's parameters don't fit the Codie's limits. Nothing replaces it. The Timer Tools are left out too if Home Assistant's built-in agent doesn't support the Codie's AI language. Exposed scripts are not Tools of their own: the Character runs them through `turn_on`, without their fields, and `turn_on`'s description lists their names so the Character can find them. The Codie allows at most 16 Tools per integration, and a list that changed with your setup would make the Character's abilities hard to predict. The catalog has 15 Tools. One place is left free on purpose, for a Tool added later.
 
 The Character keeps the Tools it had when a conversation started. After a change, such as a Home Assistant restart or upgrade, or an integration that adds Assist tools, start a new conversation to get the new Tools.
 
 The Character understands and replies in the Codie's AI language, set on the Codie. Home Assistant reads it when the integration starts. If you change it, reload the integration.
+
+## Timers
+
+A Timer makes the Character act on the home later: "Hey Codie, turn off the kitchen lamp in 20 minutes". The Character sets it with `timer_start`, giving a **Command** (a short home-control sentence such as "turn off the kitchen lamp"), a delay and, if it wants, a name. When the Timer ends, Home Assistant runs the Command.
+
+Timers are not the Codie's own Alarms and Reminders. Those belong to the Character, are set on the Codie, and can only speak. A Timer acts on the home. A plain countdown that only rings is not a Timer here.
+
+- **The Command is checked when the Timer is set.** Home Assistant's built-in agent must understand it as one of its own sentences or as one of your sentence triggers, in the Codie's AI language. If it doesn't, the Tool fails at once and the Character can rephrase it or tell you. The Exposed entities are checked later, when the Command runs.
+- **The built-in agent runs it.** Whatever your default Assist agent is, the Command always runs through the built-in one, because that is the agent that checked it. If the built-in agent doesn't support the Codie's AI language, or Home Assistant no longer offers the recognizer the check needs, the Timer Tools are unavailable and the Character doesn't have them. A Timer is never started unchecked.
+- **Names.** Without a `name`, the Command names the Timer. Names are matched without regard to case, and a part of a name works if it fits only one Timer. Two Timers can't share a name.
+- **Limits.** A Timer lasts more than zero and at most 24 hours (`hours`, `minutes` and `seconds` add up). A Codie runs at most 10 Timers at once.
+- **Cancel and status.** `timer_control` with `status` lists every running Timer with the time left and its Command, or one Timer by name. With `cancel`, it stops the named Timer, or the only one if just one is running. If several are running and none is named, the Character is told to ask which.
+- **Restarts.** Timers belong to the Codie they were set on and are stored by Home Assistant. They resume with their remaining time after a restart or a reload of the integration. A Timer that ended while Home Assistant was down is dropped with a warning in the log, and its Command is never run late. Removing the Codie from Home Assistant deletes its Timers.
+- **Failures are announced.** If the Command fails when the Timer ends, for example because the entity is no longer Exposed, the Character says so with an immediate [Announcement](#announcements) such as "I couldn't turn off the kitchen lamp: ...". A Command that works is silent. If the Codie can't be reached, the failure is only written to the log.
+
+Timers are kept by this integration, not by Home Assistant's own timers, so they don't appear in Home Assistant's timer list or on other voice satellites.
 
 ## Exposure controls access
 
