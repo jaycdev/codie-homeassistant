@@ -31,6 +31,7 @@ from .const import (
 from .executor import CodieExecutor
 from .settings import CodieSettingsCoordinator
 from .timers import CodieTimers, async_remove_timers, timers_store
+from .tool_events import ToolRecorder
 from .tools import CatalogRegistrar, async_call_tool
 
 _LOGGER = logging.getLogger(__name__)
@@ -105,11 +106,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: CodieConfigEntry) -> boo
 
     timers = CodieTimers(hass, timers_store(hass, entry.entry_id), language, announce)
     await timers.async_load()
+    recorder = ToolRecorder(hass, entry, partial(async_call_tool, hass, language, timers))
     executor = CodieExecutor(
         client,
         integration_id,
-        partial(async_call_tool, hass, language, timers),
+        recorder.async_handle,
         on_auth_failed=lambda: entry.async_start_reauth(hass),
+        on_call=recorder.record,
     )
     settings = CodieSettingsCoordinator(hass, entry, client)
     # The settings do not gate setup: the Character works without them. If they cannot be read

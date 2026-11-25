@@ -98,6 +98,23 @@ class CodieTool:
     # The parameters of a Tool the integration handles itself, such as the Timer Tools. It has
     # no Assist tool to take them from, so `assist_name` is `INTEGRATION`.
     parameters: Mapping[str, Any] | None = None
+    # Actions of a combined Tool that only read, so the Tool is not a read Tool as a whole.
+    read_actions: tuple[str, ...] = ()
+
+    def assist_name_for(self, arguments: Mapping[str, Any]) -> str | None:
+        """The Assist tool a call with `arguments` runs, or None if there is none.
+
+        That is the intent the `action` maps to for a combined Tool, and none for a Tool the
+        integration handles itself or for an `action` that is missing or unknown.
+        """
+        if not self.actions:
+            return self.assist_name or None
+        action = arguments.get("action")
+        return self.actions.get(action) if isinstance(action, str) else None
+
+    def reads(self, arguments: Mapping[str, Any]) -> bool:
+        """Whether a call with `arguments` only reads."""
+        return self.risk == "read" or arguments.get("action") in self.read_actions
 
 
 TOOLS: tuple[CodieTool, ...] = (
@@ -185,6 +202,7 @@ TOOLS: tuple[CodieTool, ...] = (
             "Set action to cancel or status."
         ),
         unavailable=TIMERS_UNAVAILABLE,
+        read_actions=("status",),
         parameters={
             "type": "object",
             "properties": {
@@ -418,15 +436,24 @@ class CatalogRegistrar:
             return True
 
 
+def find_tool(name: str) -> CodieTool | None:
+    """The Tool called `name`, or None."""
+    return next((tool for tool in TOOLS if tool.name == name), None)
+
+
 async def async_call_tool(
     hass: HomeAssistant,
     language: str | None,
     timers: CodieTimers,
     name: str,
     arguments: dict[str, Any],
+    affected: list[str] | None = None,
 ) -> dict[str, Any]:
-    """Run a Tool and return the result data; Timer Tools go to `timers`, the rest to Assist."""
-    tool = next((t for t in TOOLS if t.name == name), None)
+    """Run a Tool and return the result data; Timer Tools go to `timers`, the rest to Assist.
+
+    The ids of the entities the call acted on are added to `affected`, for the record of the call.
+    """
+    tool = find_tool(name)
     if tool is None:
         raise ToolError(ERROR_UNKNOWN_TOOL, f"No tool named {name}")
     if tool.parameters is not None:
@@ -437,15 +464,13 @@ async def async_call_tool(
         return await timers.async_control(arguments)
     context = _llm_context(language)
     arguments = dict(arguments)
-    assist_name = tool.assist_name
-    if tool.actions:
-        action = arguments.pop("action", None)
-        if not isinstance(action, str) or action not in tool.actions:
-            raise ToolError(
-                ERROR_INVALID_ARGUMENTS,
-                f"action must be one of {', '.join(tool.actions)}",
-            )
-        assist_name = tool.actions[action]
+    assist_name = tool.assist_name_for(arguments)
+    if assist_name is None:
+        raise ToolError(
+            ERROR_INVALID_ARGUMENTS,
+            f"action must be one of {', '.join(tool.actions)}",
+        )
+    arguments.pop("action", None)
     try:
         api_tools, _ = await _assist_api_tools(hass, language)
         assist_tool = await _assist_tool(hass, assist_name, api_tools)
@@ -482,7 +507,10 @@ async def async_call_tool(
         ) from err
     except HomeAssistantError as err:
         raise ToolError(ERROR_HOME_ASSISTANT, str(err)) from err
-    return _shape_result(raw)
+    data = _shape_result(raw)
+    if affected is not None:
+        affected.extend(_acted_on(raw))
+    return data
 
 
 def _duplicate_name_error(hass: HomeAssistant, err: intent.MatchFailedError) -> ToolError:
@@ -574,16 +602,20 @@ def failure_data(message: str) -> dict[str, Any]:
     return {"success": False, "error": message[:MAX_ERROR_CHARS]}
 
 
+def _unwrap(raw: Any) -> tuple[dict[str, Any], bool]:
+    """The result dict of an Assist result and whether the tool reported a failure."""
+    if isinstance(raw, dict):
+        return raw, False
+    return raw.data, bool(getattr(raw, "error", False))
+
+
 def _shape_result(raw: Any) -> dict[str, Any]:
     """Reduce an Assist result to the stable shape of `_ASSIST_RESULT_SCHEMA`.
 
     Older Home Assistant returns a dict. 2026.11 returns a `ToolResult` whose `data` is that
     dict, with `error` set when the tool failed.
     """
-    failed = False
-    if not isinstance(raw, dict):
-        failed = bool(getattr(raw, "error", False))
-        raw = raw.data
+    raw, failed = _unwrap(raw)
     if "response_type" in raw:
         return _shape_intent_response(raw)
     if failed or not raw.get("success", "error" not in raw):
@@ -596,6 +628,15 @@ def _shape_result(raw: Any) -> dict[str, Any]:
             data["result"] = _truncate(text, MAX_RESULT_BYTES)
             break
     return data
+
+
+def _acted_on(raw: Any) -> list[str]:
+    """The ids of the entities an intent response says it acted on."""
+    raw, _ = _unwrap(raw)
+    if "response_type" not in raw:
+        return []
+    done = (raw.get("data") or {}).get("success", [])
+    return [t["id"] for t in done if t.get("type") == "entity" and t.get("id")]
 
 
 def _shape_intent_response(raw: dict[str, Any]) -> dict[str, Any]:

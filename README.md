@@ -89,6 +89,33 @@ Timers are not the Codie's own Alarms and Reminders. Those belong to the Charact
 
 Timers are kept by this integration, not by Home Assistant's own timers, so they don't appear in Home Assistant's timer list or on other voice satellites.
 
+## Seeing what the Character did
+
+Nothing else in Home Assistant records the Tool calls the Character makes, so the integration does.
+
+**Event.** Every Tool call fires a `codie_tool_called` event once it has finished, whether it succeeded or failed. That includes the read Tools (`get_home_state`, `todo_get_items`) and calls that failed because they timed out. A call the Codie abandoned by disconnecting has no known outcome and fires nothing. The event data:
+
+- `device_id`: The Codie's device id, to filter on when you have several Codies. `null` if the device is missing.
+- `tool`: The Tool's name, such as `turn_off`. It is whatever name the Codie sent, so it can be one that does not exist.
+- `assist_tool`: The Assist tool the Tool maps to, such as `HassTurnOff`. For `media_control` it is the one the call's `action` selects. `null` for the Timer Tools, for an unknown Tool and for an invalid `action`.
+- `arguments`: The arguments the Character gave, as received.
+- `success`: `true` if the call succeeded.
+- `error`: The error code if it failed, otherwise `null`. For example `target_not_found`, `ambiguous_target`, `invalid_arguments`, `tool_unavailable`, `unknown_tool`, `timeout` or `internal_error`.
+- `entity_ids`: The entities the call acted on, as a list, when Home Assistant says which. Empty for a failed call and for Tools that do not act on entities.
+
+An automation can react to a call, for example to notify you whenever the Character turns something off:
+
+```yaml
+triggers:
+  - trigger: event
+    event_type: codie_tool_called
+    event_data:
+      tool: turn_off
+      success: true
+```
+
+**Logbook.** The calls that change something also appear in the logbook, listed under the Codie whose Character made the call, such as "turned off Kitchen light" or "could not turn off Garage light (target_not_found)". The entry is linked to that Codie's device and, if the call acted on exactly one entity, to that entity's history too. Home Assistant can only link a single entity to an entry, so a call that acted on several has one entry under the Codie, naming them all. Calls that only read are left out so they do not flood the logbook: the read Tools, and `timer_control` with `status`. The logbook can only describe every event of one type or none, so the integration fires a second event, `codie_tool_logged`, for the calls it shows. It has the same data as `codie_tool_called`, plus `entity_id` when the call acted on exactly one entity. Use `codie_tool_called` in automations.
+
 ## Exposure controls access
 
 The Character only sees and controls **Exposed entities**: the entities you expose to Assist. Manage them in **Settings → Voice assistants → Expose**. The Character can't see an entity you haven't exposed, and asking it to control one does nothing. When a request names something that isn't exposed, the Character is told which exposed names it may use instead.

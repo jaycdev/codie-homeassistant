@@ -29,6 +29,8 @@ ERROR_TIMEOUT = "timeout"
 ERROR_INTERNAL = "internal_error"
 
 ToolHandler = Callable[[str, dict[str, Any]], Awaitable[dict[str, Any]]]
+# Told the Tool, its arguments and the code it failed with (None if it succeeded) once a call ends.
+CallObserver = Callable[[str, dict[str, Any], str | None], None]
 
 
 class CodieExecutor:
@@ -40,11 +42,13 @@ class CodieExecutor:
         integration_id: str,
         handler: ToolHandler,
         on_auth_failed: Callable[[], None] | None = None,
+        on_call: CallObserver | None = None,
     ) -> None:
         self._client = client
         self._on_auth_failed = on_auth_failed
         self._integration_id = integration_id
         self._handler = handler
+        self._on_call = on_call
         self._ws: ClientWebSocketResponse | None = None
         # Running calls and their invocation ids, for the log if the socket dies under them.
         self._calls: dict[asyncio.Task[None], str] = {}
@@ -214,6 +218,8 @@ class CodieExecutor:
         except Exception:
             _LOGGER.exception("Tool %s crashed", call["name"])
             result.update(status="failed", code=ERROR_INTERNAL, data=failure_data("Internal error"))
+        if self._on_call is not None:
+            self._on_call(call["name"], call.get("arguments") or {}, result.get("code"))
         if result["status"] == "succeeded":
             _LOGGER.debug(
                 "Tool %s succeeded, result %d bytes: %.300s",
