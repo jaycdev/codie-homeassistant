@@ -30,7 +30,7 @@ from homeassistant.helpers.start import async_at_started
 from homeassistant.helpers.typing import ConfigType
 
 from .announce import async_announce, async_register_services
-from .api import CodieAuthError, CodieClient, CodieCredentials, CodieError
+from .api import CodieApiError, CodieAuthError, CodieClient, CodieCredentials, CodieError
 from .const import (
     CONF_INTEGRATION_ID,
     CONF_LOCAL_SECRET,
@@ -39,7 +39,7 @@ from .const import (
     DOMAIN,
 )
 from .executor import CodieExecutor
-from .issues import CodieIssues, async_clear_issues
+from .issues import CodieIssues, async_clear_issues, is_refusal
 from .settings import CodieSettingsCoordinator
 from .timers import CodieTimers, async_remove_timers, timers_store
 from .tool_events import ToolRecorder
@@ -181,6 +181,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: CodieConfigEntry) -> boo
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 
     cancel_retry: CALLBACK_TYPE | None = None
+    # Whether the last refresh failed, so a long outage is logged once rather than each retry.
+    refresh_failing = False
+    # Set once this setup unloads. A refresh can outlive it, and the entry's state may already
+    # belong to the next setup.
+    unloaded = False
 
     @callback
     def _cancel_retry() -> None:
@@ -189,9 +194,15 @@ async def async_setup_entry(hass: HomeAssistant, entry: CodieConfigEntry) -> boo
             cancel_retry()
             cancel_retry = None
 
+    @callback
+    def _on_unload() -> None:
+        nonlocal unloaded
+        unloaded = True
+        _cancel_retry()
+
     async def refresh_catalog() -> None:
         """Re-register after the Assist tools changed, then reconnect to pick it up."""
-        nonlocal cancel_retry
+        nonlocal cancel_retry, refresh_failing
         _cancel_retry()
         try:
             if await registrar.async_refresh():
@@ -200,18 +211,24 @@ async def async_setup_entry(hass: HomeAssistant, entry: CodieConfigEntry) -> boo
         except CodieAuthError:
             entry.async_start_reauth(hass)
         except CodieError as err:
-            # The next loaded component tries again, or the retry if none loads.
-            _LOGGER.warning("Could not refresh the tools on the Codie: %s", err)
-            # Not once unloading has begun, which would leave the timer behind.
-            if entry.state is ConfigEntryState.LOADED:
+            log = _LOGGER.debug if refresh_failing else _LOGGER.warning
+            log("Could not refresh the tools on the Codie: %s", err)
+            refresh_failing = True
+            # The next loaded component tries again, or the retry if none loads. A refused
+            # catalog would be refused again; its repair issue tells the user instead.
+            if not unloaded and not (isinstance(err, CodieApiError) and is_refusal(err)):
                 cancel_retry = async_call_later(hass, REFRESH_RETRY_S, _retry_refresh)
+        else:
+            if refresh_failing:
+                _LOGGER.info("The tools on the Codie are up to date again")
+            refresh_failing = False
 
     # An integration that loads after this entry, or an upgrade, adds or removes Assist tools.
     debouncer = Debouncer(
         hass, _LOGGER, cooldown=REFRESH_COOLDOWN_S, immediate=False, function=refresh_catalog
     )
     entry.async_on_unload(debouncer.async_shutdown)
-    entry.async_on_unload(_cancel_retry)
+    entry.async_on_unload(_on_unload)
 
     @callback
     def _retry_refresh(_now: datetime) -> None:
