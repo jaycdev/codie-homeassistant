@@ -114,6 +114,8 @@ class FakeCodie:
     deleted_integrations: list[str] = field(default_factory=list)
     # Reject this many PUTs with 409 before accepting one, as if another writer raced us.
     put_conflicts: int = 0
+    # Refuse every PUT of a catalog with (status, code), as when the Codie finds it invalid.
+    put_error: tuple[int, str] | None = None
     # Executor WebSocket state.
     executor_connects: int = 0
     executor_results: list[dict[str, Any]] = field(default_factory=list)
@@ -520,6 +522,8 @@ class FakeCodie:
         catalog = await request.json()
         entry = self.tool_integrations.get(integration_id)
         current = entry["revision"] if entry else 0
+        if self.put_error is not None:
+            return _error(*self.put_error)
         if self.put_conflicts > 0:
             self.put_conflicts -= 1
             if entry:

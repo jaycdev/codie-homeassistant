@@ -118,6 +118,24 @@
       }
     }
   },
+  "issues": {
+    "clock_skew": {
+      "title": "The clocks of {name} and Home Assistant differ",
+      "description": "{name} rejects Home Assistant's requests because its clock and Home Assistant's are more than 5 minutes apart. Until they agree, Announcements fail, and the Character loses control of your home the next time it reconnects.\n\nCheck that Home Assistant and the Codie both set their time from the internet (NTP), and that the Codie is connected to the internet. This issue goes away once the Codie accepts Home Assistant's requests again."
+    },
+    "tool_missing": {
+      "title": "{name} cannot offer the {tool} Tool",
+      "description": "Home Assistant has no `{assist_tool}` Assist tool, so the Character on {name} is not offered `{tool}`. This usually means a Home Assistant update renamed or removed it. Update the Codie integration, or report it to the integration's maintainers. This issue goes away once Home Assistant offers the tool again."
+    },
+    "tool_schema_limit": {
+      "title": "{name} cannot offer the {tool} Tool",
+      "description": "The parameters of Home Assistant's Assist tool for `{tool}` do not fit what {name} accepts ({reason}), so the Character is not offered it. Update the Codie integration, or report it to the integration's maintainers. This issue goes away once the tool fits again."
+    },
+    "catalog_rejected": {
+      "title": "{name} refused Home Assistant's Tools",
+      "description": "{name} refused the list of Tools Home Assistant offers its Character: {error}\n\nUntil it accepts them, the Character keeps the Tools it had before; if this happened while the integration was starting, it cannot use any until the Codie accepts them. Update the Codie integration and the Codie's firmware, or report it to the integration's maintainers. Home Assistant tries again on its own, and this issue goes away once the Codie accepts the Tools."
+    }
+  },
   "exceptions": {
     "announcement_length": {
       "message": "The message must have between 1 and {max} characters."

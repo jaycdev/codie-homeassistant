@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass
 from functools import partial
 from typing import Any
@@ -10,13 +11,14 @@ from typing import Any
 from homeassistant.components.homeassistant.exposed_entities import async_listen_entity_updates
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_HOST, CONF_PORT, EVENT_COMPONENT_LOADED, Platform
-from homeassistant.core import Event, HomeAssistant, callback
+from homeassistant.core import CALLBACK_TYPE, Event, HomeAssistant, callback
 from homeassistant.exceptions import ConfigEntryAuthFailed, ConfigEntryError, ConfigEntryNotReady
 from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.debounce import Debouncer
+from homeassistant.helpers.event import async_call_later
 from homeassistant.helpers.typing import ConfigType
 
 from .announce import async_announce, async_register_services
@@ -29,6 +31,7 @@ from .const import (
     DOMAIN,
 )
 from .executor import CodieExecutor
+from .issues import async_set_clock_skew
 from .settings import CodieSettingsCoordinator
 from .timers import CodieTimers, async_remove_timers, timers_store
 from .tool_events import ToolRecorder
@@ -50,6 +53,8 @@ CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
 
 # Components load in bursts at startup; wait for the burst to end before comparing catalogs.
 REFRESH_COOLDOWN_S = 10.0
+# A refresh that failed is tried again after this long, even if no other component loads.
+REFRESH_RETRY_S = 300.0
 
 
 @dataclass
@@ -64,7 +69,11 @@ class CodieRuntimeData:
 type CodieConfigEntry = ConfigEntry[CodieRuntimeData]
 
 
-def _client_for(hass: HomeAssistant, entry: ConfigEntry[Any]) -> CodieClient:
+def _client_for(
+    hass: HomeAssistant,
+    entry: ConfigEntry[Any],
+    on_clock_skew: Callable[[bool], None] | None = None,
+) -> CodieClient:
     return CodieClient(
         async_get_clientsession(hass),
         entry.data[CONF_HOST],
@@ -74,6 +83,7 @@ def _client_for(hass: HomeAssistant, entry: ConfigEntry[Any]) -> CodieClient:
             user_id=entry.data[CONF_USER_ID],
             local_session_id=entry.data.get(CONF_LOCAL_SESSION_ID, ""),
         ),
+        on_clock_skew,
     )
 
 
@@ -87,7 +97,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: CodieConfigEntry) -> boo
     """Set up a Codie from a config entry."""
     if entry.unique_id is None:
         raise ConfigEntryError("The Codie entry has no unique ID; remove and add it again")
-    client = _client_for(hass, entry)
+    client = _client_for(hass, entry, partial(async_set_clock_skew, hass, entry))
     integration_id: str = entry.data[CONF_INTEGRATION_ID]
 
     # The Character speaks the AI language, not the device's UI language. It is read once here,
@@ -101,7 +111,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: CodieConfigEntry) -> boo
     ai_language = system.get("ai_language")
     language = ai_language if isinstance(ai_language, str) and ai_language else None
 
-    registrar = CatalogRegistrar(hass, client, integration_id, language)
+    registrar = CatalogRegistrar(hass, client, entry, language)
     try:
         await registrar.async_register()
     except CodieAuthError as err:
@@ -138,8 +148,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: CodieConfigEntry) -> boo
     )
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 
+    cancel_retry: CALLBACK_TYPE | None = None
+
     async def refresh_catalog() -> None:
         """Re-register after the Assist tools changed, then reconnect to pick it up."""
+        nonlocal cancel_retry
         try:
             if await registrar.async_refresh():
                 _LOGGER.info("The available Assist tools changed; reconnecting the executor")
@@ -147,8 +160,29 @@ async def async_setup_entry(hass: HomeAssistant, entry: CodieConfigEntry) -> boo
         except CodieAuthError:
             entry.async_start_reauth(hass)
         except CodieError as err:
-            # The next loaded component tries again.
+            # The next loaded component tries again, or the retry if none does: otherwise a
+            # catalog the Codie refused would stay refused.
             _LOGGER.warning("Could not refresh the tools on the Codie: %s", err)
+            # A refresh still running at unload must not leave a timer behind.
+            if cancel_retry is None and not unloaded:
+                cancel_retry = async_call_later(hass, REFRESH_RETRY_S, _retry_refresh)
+
+    unloaded = False
+
+    @callback
+    def _retry_refresh(_now: Any) -> None:
+        nonlocal cancel_retry
+        cancel_retry = None
+        debouncer.async_schedule_call()
+
+    @callback
+    def _cancel_retry() -> None:
+        nonlocal unloaded
+        unloaded = True
+        if cancel_retry is not None:
+            cancel_retry()
+
+    entry.async_on_unload(_cancel_retry)
 
     # An integration that loads after this entry, or an upgrade, adds or removes Assist tools.
     debouncer = Debouncer(

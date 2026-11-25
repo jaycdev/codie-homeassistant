@@ -301,3 +301,33 @@ async def test_reply_missing_expected_fields_raises_a_response_error(
 
     with pytest.raises(CodieResponseError):
         await CodieClient(session, fake_codie.host, fake_codie.port).async_pair_request()
+
+
+async def test_clock_skew_is_reported_once_per_change_and_not_cleared_by_a_server_error(
+    session: ClientSession, fake_codie: FakeCodie
+) -> None:
+    changes: list[bool] = []
+    client = CodieClient(
+        session,
+        fake_codie.host,
+        fake_codie.port,
+        CodieCredentials(local_secret=fake_codie.local_secret, user_id=fake_codie.user_id),
+        changes.append,
+    )
+
+    fake_codie.auth_error = "REQUEST_EXPIRED"
+    for _ in range(2):
+        with pytest.raises(CodieApiError):
+            await client.async_get_system()
+    assert changes == [True]
+
+    # A server error may come from before the Codie checked the clock.
+    fake_codie.auth_error = None
+    fake_codie.overrides["/data/user/system"] = (503, b'{"success":false,"code":"BUSY"}')
+    with pytest.raises(CodieApiError):
+        await client.async_get_system()
+    assert changes == [True]
+
+    del fake_codie.overrides["/data/user/system"]
+    await client.async_get_system()
+    assert changes == [True, False]

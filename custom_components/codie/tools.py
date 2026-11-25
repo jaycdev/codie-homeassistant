@@ -10,10 +10,12 @@ import json
 import logging
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
+from http import HTTPStatus
 from typing import Any
 
 import probatio
 from homeassistant.components.homeassistant.exposed_entities import async_should_expose
+from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, State
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import area_registry as ar
@@ -23,6 +25,7 @@ from homeassistant.helpers import intent, llm
 from homeassistant.helpers.importlib import async_import_module
 
 from .api import CodieApiError, CodieClient
+from .const import CONF_INTEGRATION_ID
 from .errors import (
     ERROR_AMBIGUOUS_TARGET,
     ERROR_ASSIST_FAILED,
@@ -34,6 +37,13 @@ from .errors import (
     ERROR_UNKNOWN_TOOL,
     ToolError,
     ToolNeedsClarification,
+)
+from .issues import (
+    ISSUE_TOOL_MISSING,
+    ISSUE_TOOL_SCHEMA_LIMIT,
+    LeftOut,
+    async_set_catalog_rejected,
+    async_set_tools_left_out,
 )
 from .schema import SchemaLimitError, from_probatio
 from .timers import (
@@ -100,6 +110,10 @@ class CodieTool:
     parameters: Mapping[str, Any] | None = None
     # Actions of a combined Tool that only read, so the Tool is not a read Tool as a whole.
     read_actions: tuple[str, ...] = ()
+    # The integration whose intents back the Assist tool; "intent" for Home Assistant's own.
+    # The `intent` integration registers them all, so until both are loaded a missing Assist
+    # tool is expected (no vacuum, no vacuum_start) rather than a problem to report.
+    integration: str | None = None
 
     def assist_name_for(self, arguments: Mapping[str, Any]) -> str | None:
         """The Assist tool a call with `arguments` runs, or None if there is none.
@@ -133,14 +147,17 @@ TOOLS: tuple[CodieTool, ...] = (
         "HassTurnOn",
         "reversible",
         hidden=("device_class",),
+        integration="intent",
         # get_home_state leaves scripts out, so the Character finds them in this description.
         scripts_intro="Turns on/opens/locks a device or entity, or runs a script. Scripts: ",
     ),
-    CodieTool("turn_off", "HassTurnOff", "reversible", hidden=("device_class",)),
-    CodieTool("light_set", "HassLightSet", "reversible"),
-    CodieTool("climate_set_temp", "HassClimateSetTemperature", "reversible"),
-    CodieTool("set_position", "HassSetPosition", "reversible"),
-    CodieTool("fan_set_speed", "HassFanSetSpeed", "reversible"),
+    CodieTool(
+        "turn_off", "HassTurnOff", "reversible", hidden=("device_class",), integration="intent"
+    ),
+    CodieTool("light_set", "HassLightSet", "reversible", integration="light"),
+    CodieTool("climate_set_temp", "HassClimateSetTemperature", "reversible", integration="climate"),
+    CodieTool("set_position", "HassSetPosition", "reversible", integration="intent"),
+    CodieTool("fan_set_speed", "HassFanSetSpeed", "reversible", integration="fan"),
     CodieTool(
         "media_control",
         "HassMediaPause",
@@ -155,11 +172,14 @@ TOOLS: tuple[CodieTool, ...] = (
             "next": "HassMediaNext",
             "previous": "HassMediaPrevious",
         },
+        integration="media_player",
     ),
-    CodieTool("set_volume", "HassSetVolume", "reversible"),
-    CodieTool("media_search_play", "HassMediaSearchAndPlay", "reversible"),
-    CodieTool("vacuum_start", "HassVacuumStart", "reversible"),
-    CodieTool("list_add_item", "HassListAddItem", "reversible"),
+    CodieTool("set_volume", "HassSetVolume", "reversible", integration="media_player"),
+    CodieTool(
+        "media_search_play", "HassMediaSearchAndPlay", "reversible", integration="media_player"
+    ),
+    CodieTool("vacuum_start", "HassVacuumStart", "reversible", integration="vacuum"),
+    CodieTool("list_add_item", "HassListAddItem", "reversible", integration="todo"),
     CodieTool(
         "todo_get_items",
         ASSIST_TODO_GET_ITEMS,
@@ -319,12 +339,17 @@ async def _assist_definition(
     tool: CodieTool,
     api_tools: list[llm.Tool],
     serializer: Callable[[Any], Any],
-) -> tuple[str, dict[str, Any]] | None:
-    """The description and parameters of a Tool backed by Assist, or None to leave it out."""
+) -> tuple[str, dict[str, Any]] | LeftOut | None:
+    """The description and parameters of a Tool backed by Assist.
+
+    Otherwise why it is left out, or None when that is expected and not worth reporting.
+    """
     actions = await _offered_actions(hass, tool, api_tools)
     assist_name = next(iter(actions.values())) if actions else tool.assist_name
     if (assist_tool := await _assist_tool(hass, assist_name, api_tools)) is None:
         _LOGGER.debug("Assist tool %s is not available; skipping %s", assist_name, tool.name)
+        if tool.integration is None or {tool.integration, "intent"} <= hass.config.components:
+            return LeftOut(ISSUE_TOOL_MISSING, {"assist_tool": assist_name})
         return None
     description, parameters = assist_tool.description or "", assist_tool.parameters
     try:
@@ -336,7 +361,7 @@ async def _assist_definition(
             schema.setdefault("required", []).append("action")
     except SchemaLimitError as err:
         _LOGGER.warning("Skipping tool %s: %s", tool.name, err)
-        return None
+        return LeftOut(ISSUE_TOOL_SCHEMA_LIMIT, {"reason": str(err)})
     if tool.scripts_intro and (scripts := _script_names(hass)):
         description = _list_names(tool.scripts_intro, scripts)
     return description, schema
@@ -344,13 +369,14 @@ async def _assist_definition(
 
 async def build_catalog(
     hass: HomeAssistant, expected_revision: int, language: str | None
-) -> dict[str, Any]:
-    """The body for `PUT /data/user/tool-integrations/{id}`.
+) -> tuple[dict[str, Any], dict[str, LeftOut]]:
+    """The body for `PUT /data/user/tool-integrations/{id}`, and the Tools to report left out.
 
     `language` is the Codie's AI language, which decides whether the Timer Tools are offered.
     """
     api_tools, serializer = await _assist_api_tools(hass)
     tools: list[dict[str, Any]] = []
+    left_out: dict[str, LeftOut] = {}
     for tool in TOOLS:
         if tool.parameters is not None:
             if not timers_supported(hass, language):
@@ -358,6 +384,9 @@ async def build_catalog(
                 continue
             description, schema = "", copy.deepcopy(dict(tool.parameters))
         elif (found := await _assist_definition(hass, tool, api_tools, serializer)) is None:
+            continue
+        elif isinstance(found, LeftOut):
+            left_out[tool.name] = found
             continue
         else:
             description, schema = found
@@ -372,48 +401,34 @@ async def build_catalog(
             "timeout_ms": DEFAULT_TIMEOUT_MS,
         }
         tools.append({**definition, "version": _version(definition)})
-    return {
+    catalog = {
         "protocol_version": "v1",
         "expected_revision": expected_revision,
         "name": "Home Assistant",
         "enabled": True,
         "tools": tools,
     }
-
-
-async def async_register_catalog(
-    hass: HomeAssistant, client: CodieClient, integration_id: str, language: str | None
-) -> list[dict[str, Any]]:
-    """Create or update the catalog and return the Tools it now holds.
-
-    On a revision conflict the current revision is read again and the PUT retried.
-    """
-    attempt = 0
-    while True:
-        attempt += 1
-        current = await client.async_get_tool_integration(integration_id)
-        revision = int(current["revision"]) if current else 0
-        catalog = await build_catalog(hass, revision, language)
-        try:
-            await client.async_put_tool_integration(integration_id, catalog)
-        except CodieApiError as err:
-            if err.status != 409 or attempt >= REGISTER_ATTEMPTS:
-                raise
-            _LOGGER.debug("Catalog revision conflict, re-reading (attempt %s)", attempt)
-            continue
-        tools: list[dict[str, Any]] = catalog["tools"]
-        return tools
+    return catalog, left_out
 
 
 class CatalogRegistrar:
-    """Keeps the Codie's catalog in step with the Assist tools Home Assistant has."""
+    """Keeps the Codie's catalog in step with the Assist tools Home Assistant has.
+
+    It raises a repair issue for each Tool it leaves out, and one while the Codie refuses the
+    catalog, and clears them once that is no longer so.
+    """
 
     def __init__(
-        self, hass: HomeAssistant, client: CodieClient, integration_id: str, language: str | None
+        self,
+        hass: HomeAssistant,
+        client: CodieClient,
+        entry: ConfigEntry[Any],
+        language: str | None,
     ) -> None:
         self._hass = hass
         self._client = client
-        self._integration_id = integration_id
+        self._entry = entry
+        self._integration_id: str = entry.data[CONF_INTEGRATION_ID]
         self._language = language
         self._tools: list[dict[str, Any]] = []
         self._lock = asyncio.Lock()
@@ -421,19 +436,50 @@ class CatalogRegistrar:
     async def async_register(self) -> None:
         """Register the catalog unconditionally."""
         async with self._lock:
-            self._tools = await async_register_catalog(
-                self._hass, self._client, self._integration_id, self._language
-            )
+            await self._async_register()
 
     async def async_refresh(self) -> bool:
         """Register again if the available Tools changed. Returns whether it did."""
         async with self._lock:
-            if (await build_catalog(self._hass, 0, self._language))["tools"] == self._tools:
+            catalog, left_out = await build_catalog(self._hass, 0, self._language)
+            # A Tool's integration can load with its Assist tool still missing.
+            async_set_tools_left_out(self._hass, self._entry, left_out)
+            if catalog["tools"] == self._tools:
+                # The Codie still holds these, even if it refused a catalog in between.
+                async_set_catalog_rejected(self._hass, self._entry, None)
                 return False
-            self._tools = await async_register_catalog(
-                self._hass, self._client, self._integration_id, self._language
-            )
+            await self._async_register()
             return True
+
+    async def _async_register(self) -> None:
+        """Create or update the catalog and remember the Tools it now holds.
+
+        On a revision conflict the current revision is read again and the PUT retried.
+        """
+        attempt = 0
+        while True:
+            attempt += 1
+            current = await self._client.async_get_tool_integration(self._integration_id)
+            revision = int(current["revision"]) if current else 0
+            catalog, left_out = await build_catalog(self._hass, revision, self._language)
+            async_set_tools_left_out(self._hass, self._entry, left_out)
+            try:
+                await self._client.async_put_tool_integration(self._integration_id, catalog)
+            except CodieApiError as err:
+                if err.status == HTTPStatus.CONFLICT and attempt < REGISTER_ATTEMPTS:
+                    _LOGGER.debug("Catalog revision conflict, re-reading (attempt %s)", attempt)
+                    continue
+                # A stale revision is a race, a 401 is the credentials or the clock, and a
+                # server error passes; the next refresh or setup retry tries again.
+                if err.status < HTTPStatus.INTERNAL_SERVER_ERROR and err.status not in (
+                    HTTPStatus.CONFLICT,
+                    HTTPStatus.UNAUTHORIZED,
+                ):
+                    async_set_catalog_rejected(self._hass, self._entry, str(err))
+                raise
+            async_set_catalog_rejected(self._hass, self._entry, None)
+            self._tools = catalog["tools"]
+            return
 
 
 def find_tool(name: str) -> CodieTool | None:

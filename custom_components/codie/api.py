@@ -8,6 +8,7 @@ import json
 import logging
 import time
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass
 from email.utils import parsedate_to_datetime
 from http import HTTPStatus
@@ -223,13 +224,17 @@ class CodieClient:
         host: str,
         port: int,
         credentials: CodieCredentials | None = None,
+        on_clock_skew: Callable[[bool], None] | None = None,
     ) -> None:
         self._session = session
         self._host = host
         self._port = port
         self._credentials = credentials
-        # Warn about clock skew once per outage, not on every retry.
-        self._clock_skew_warned = False
+        # Called with True when the clocks differ too much, and with False once a signed
+        # request gets past the Codie's clock check: once per change, not on every request.
+        self._on_clock_skew = on_clock_skew
+        # None until the first signed answer shows which it is.
+        self._clock_skewed: bool | None = None
 
     # --- public endpoints ----------------------------------------------------------------
 
@@ -490,7 +495,7 @@ class CodieClient:
         }
         url = URL.build(scheme="ws", host=self._host, port=self._port, path=path, query=query)
         try:
-            return await self._session.ws_connect(url, heartbeat=EXECUTOR_HEARTBEAT_S)
+            ws = await self._session.ws_connect(url, heartbeat=EXECUTOR_HEARTBEAT_S)
         except WSServerHandshakeError as err:
             if err.status == 401:
                 # The handshake carries no error body; a signed request shows why it failed.
@@ -498,6 +503,9 @@ class CodieClient:
             raise CodieConnectionError(f"The Codie refused the executor: {err.status}") from err
         except (ClientError, TimeoutError) as err:
             raise CodieConnectionError(f"Cannot reach the Codie at {self._host}") from err
+        # The handshake is signed, so getting in shows the clocks agree.
+        self._set_clock_skewed(False)
+        return ws
 
     async def async_request(
         self,
@@ -561,6 +569,10 @@ class CodieClient:
             except ValueError:
                 parsed = None
 
+        if signed and status < HTTPStatus.BAD_REQUEST:
+            # A success got past the signature check, the clock's included. The API does not
+            # say whether errors such as a bad body or a missing route are found before it.
+            self._set_clock_skewed(False)
         if status >= 400:
             info = parsed if isinstance(parsed, dict) else {}
             code = info.get("code")
@@ -572,25 +584,27 @@ class CodieClient:
                 if code == CLOCK_SKEW_CODE or (
                     code == "INVALID_SIGNATURE" and _clocks_differ(codie_date)
                 ):
-                    self._warn_clock_skew()
+                    self._set_clock_skewed(True)
                 elif code in REAUTH_CODES:
                     raise CodieAuthError(status, code, info.get("message"))
             raise CodieApiError(status, code, info.get("message"))
-        if signed:
-            self._clock_skew_warned = False
         if not raw.strip():
             return None
         if not isinstance(parsed, dict):
             raise CodieResponseError(f"{method} {path} did not return a JSON object")
         return parsed.get("data")
 
-    def _warn_clock_skew(self) -> None:
-        if not self._clock_skew_warned:
-            self._clock_skew_warned = True
+    def _set_clock_skewed(self, skewed: bool) -> None:
+        if self._clock_skewed is skewed:
+            return
+        self._clock_skewed = skewed
+        if skewed:
             _LOGGER.warning(
                 "The Codie rejected a signed request. The clock of Home Assistant "
                 "and the Codie differ too much; check the time on both"
             )
+        if self._on_clock_skew is not None:
+            self._on_clock_skew(skewed)
 
     def _sign(self, method: str, path: str, body: bytes) -> dict[str, str]:
         """Build the `X-Local-*` headers. A new nonce is used on every call."""

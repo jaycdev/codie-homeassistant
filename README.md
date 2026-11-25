@@ -180,8 +180,10 @@ These blueprints make automations for common Announcements. Import one, then cre
 
 ## Troubleshooting
 
+Problems you can fix show up under **Settings → Repairs**, and go away once they are fixed: the clocks of Home Assistant and the Codie differing, a Tool that cannot be offered, and the Codie refusing the Tools.
+
 - **Connected is off.** Check that the Codie is awake and on the network. Home Assistant keeps retrying with a growing delay.
-- **"The clock of Home Assistant and the Codie differ too much" in the log.** Every request is signed with the time. Check that the time is correct on both.
+- **"The clocks differ" repair.** Every request is signed with the time. Check that the time is correct on both, for example that both set it from the internet (NTP).
 - **The Character doesn't know a device.** Check that it is exposed, then start a new conversation. Calling `get_home_state` shows what the Character can see.
 
 For more detail, turn on debug logging:
