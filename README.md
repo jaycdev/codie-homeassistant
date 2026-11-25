@@ -24,9 +24,12 @@ The Character's own model on the Codie understands what you say. It calls a Tool
 Pairing is done once per Codie. It gives Home Assistant lasting credentials for that Codie.
 
 1. Wake the Codie and make sure a user is signed in on it.
-2. In Home Assistant, go to **Settings → Devices & services → Add integration** and choose **CODE27 Codie**.
-3. Enter the Codie's IP address or hostname (you can find it in your router) and the port. Leave the port at 8081 unless you changed it.
-4. The Codie shows a six-digit code. Enter it in Home Assistant within 5 minutes.
+2. Home Assistant finds Codies on your network by themselves. Go to **Settings → Devices & services**, select **Add** on the discovered Codie, and then **Submit**.
+
+   If the Codie is not discovered, for example because it is on another network or VLAN, select **Add integration**, choose **CODE27 Codie**, and enter the Codie's IP address or hostname (you can find it in your router) and the port. Leave the port at 8081 unless you changed it.
+3. The Codie shows a six-digit code. Enter it in Home Assistant within 5 minutes.
+
+A Codie that is already set up is not offered again. If its IP address changes, Home Assistant picks up the new address when it next sees the Codie on the network.
 
 The Codie is added as a device with these entities:
 
