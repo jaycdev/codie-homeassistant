@@ -58,6 +58,9 @@ REGISTER_ATTEMPTS = 3
 ASSIST_LIVE_CONTEXT = "GetLiveContext"
 ASSIST_TODO_GET_ITEMS = "todo_get_items"
 
+# The intents that act on every match, so a request that names no target needs an Area.
+_IN_AREA_INTENTS = frozenset({"HassTurnOn", "HassTurnOff", "HassLightSet", "HassSetPosition"})
+
 # Every Tool returns this one small shape. Assist's own results are reduced to it.
 _ASSIST_RESULT_SCHEMA: dict[str, Any] = {
     "type": "object",
@@ -234,17 +237,18 @@ _FALLBACK_CLASSES: dict[str, tuple[tuple[str, str, tuple[Any, ...]], ...]] = {
 }
 
 
-def _llm_context(language: str | None = None) -> llm.LLMContext:
+def _llm_context(language: str | None = None, device_id: str | None = None) -> llm.LLMContext:
     """The context for every call: the Assist API only ever sees what Assist exposes.
 
     `language` is the Codie's AI language, the one the Character speaks and understands.
+    `device_id` is the Codie's own device, whose Area Assist uses for a request that names none.
     """
     return llm.LLMContext(
         platform="codie",
         context=None,
         language=language,
         assistant="conversation",
-        device_id=None,
+        device_id=device_id,
     )
 
 
@@ -444,6 +448,7 @@ def find_tool(name: str) -> CodieTool | None:
 async def async_call_tool(
     hass: HomeAssistant,
     language: str | None,
+    device_id: str | None,
     timers: CodieTimers,
     name: str,
     arguments: dict[str, Any],
@@ -451,6 +456,7 @@ async def async_call_tool(
 ) -> dict[str, Any]:
     """Run a Tool and return the result data; Timer Tools go to `timers`, the rest to Assist.
 
+    `device_id` is the Codie's device, so a request that names no Area acts on the Codie's.
     The ids of the entities the call acted on are added to `affected`, for the record of the call.
     """
     tool = find_tool(name)
@@ -462,7 +468,7 @@ async def async_call_tool(
         if name == "timer_start":
             return await timers.async_start(arguments)
         return await timers.async_control(arguments)
-    context = _llm_context(language)
+    context = _llm_context(language, device_id)
     arguments = dict(arguments)
     assist_name = tool.assist_name_for(arguments)
     if assist_name is None:
@@ -482,8 +488,9 @@ async def async_call_tool(
                 tool.unavailable
                 or f"{assist_name} is not available; no exposed entity supports it",
             )
+        arguments = _in_codies_area(hass, device_id, assist_name, _visible(tool, arguments))
         raw = await assist_tool.async_call(
-            hass, llm.ToolInput(assist_tool.name, _visible(tool, arguments)), context
+            hass, llm.ToolInput(assist_tool.name, arguments), context
         )
     except intent.MatchFailedError as err:
         reason = err.result.no_match_reason
@@ -590,6 +597,25 @@ def _list_names(intro: str, names: list[str]) -> str:
         if len(text) <= MAX_DESCRIPTION_CHARS:
             return text
     return intro + "..."
+
+
+def _in_codies_area(
+    hass: HomeAssistant, device_id: str | None, assist_name: str, arguments: dict[str, Any]
+) -> dict[str, Any]:
+    """`arguments` aimed at the Codie's Area when they name no entity, Area or floor.
+
+    Assist tells its own model that "turn on the lights" means the lights in the room it is
+    in; the Character's model never hears that, so the Area is added here. The other intents
+    pick one target, using the Area from the context to choose between several, or act on
+    whatever is playing, wherever it is.
+    """
+    if assist_name not in _IN_AREA_INTENTS:
+        return arguments
+    if any(arguments.get(key) for key in ("name", "area", "floor")):
+        return arguments
+    device = dr.async_get(hass).async_get(device_id) if device_id else None
+    area_id = dr.async_get_effective_area_id(hass, device) if device else None
+    return {**arguments, "area": area_id} if area_id else arguments
 
 
 def _visible(tool: CodieTool, arguments: dict[str, Any]) -> dict[str, Any]:

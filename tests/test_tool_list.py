@@ -15,6 +15,7 @@ from homeassistant.components.homeassistant.exposed_entities import async_expose
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import area_registry as ar
+from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers import intent, llm, selector
 from homeassistant.setup import async_setup_component
@@ -259,6 +260,53 @@ async def test_a_name_no_area_tells_apart_fails_and_says_how_to_fix_it(
         assert tv in result["message"]
     assert "expose only one" in result["message"]
     assert calls == []
+
+
+@pytest.mark.parametrize(
+    ("codie_area", "turned_off"),
+    [("Office", ["light.desk_lamp"]), (None, ["light.desk_lamp", "light.pendant"])],
+)
+async def test_a_request_that_names_no_area_acts_on_the_codies_area(
+    hass: HomeAssistant, fake_codie: FakeCodie, codie_area: str | None, turned_off: list[str]
+) -> None:
+    # "Turn off the lights": a Codie with no Area acts on them all, as before.
+    await setup_assist(hass)
+    put_in_area(hass, add_entity(hass, "light", "desk_lamp", True), "Office")
+    put_in_area(hass, add_entity(hass, "light", "pendant", True), "Kitchen")
+    calls = async_mock_service(hass, "light", "turn_off")
+    entry = await setup(hass, fake_codie)
+    await wait_connected(hass, fake_codie, True)
+    if codie_area:
+        devices = dr.async_get(hass)
+        (codie,) = dr.async_entries_for_config_entry(devices, entry.entry_id)
+        area = ar.async_get(hass).async_get_or_create(codie_area)
+        devices.async_update_device(codie.id, area_id=area.id)
+
+    result = await fake_codie.invoke(INTEGRATION_ID, "turn_off", {"domain": ["light"]})
+
+    assert result["status"] == "succeeded"
+    assert sorted(e for c in calls for e in c.data["entity_id"]) == turned_off
+
+
+async def test_a_name_shared_across_areas_picks_the_one_in_the_codies_area(
+    hass: HomeAssistant, fake_codie: FakeCodie
+) -> None:
+    await setup_assist(hass)
+    for area_name in ("Kitchen", "Bedroom"):
+        lamp = add_entity(hass, "light", "lamp", True, unique_id=f"lamp_{area_name}")
+        put_in_area(hass, lamp, area_name)
+    calls = async_mock_service(hass, "light", "turn_on")
+    entry = await setup(hass, fake_codie)
+    await wait_connected(hass, fake_codie, True)
+    devices = dr.async_get(hass)
+    (codie,) = dr.async_entries_for_config_entry(devices, entry.entry_id)
+    bedroom = ar.async_get(hass).async_get_or_create("Bedroom")
+    devices.async_update_device(codie.id, area_id=bedroom.id)
+
+    result = await fake_codie.invoke(INTEGRATION_ID, "turn_on", {"name": "lamp"})
+
+    assert result["status"] == "succeeded"
+    assert [c.data["entity_id"] for c in calls] == [["light.lamp_bedroom"]]
 
 
 async def test_bad_arguments_fail_without_touching_home_assistant(

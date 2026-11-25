@@ -76,6 +76,15 @@ The Character keeps the Tools it had when a conversation started. After a change
 
 The Character understands and replies in the Codie's AI language, set on the Codie. Home Assistant reads it when the integration starts. If you change it, reload the integration.
 
+## Assign the Codie to an Area
+
+Assign the Codie's device to the Area it sits in: open it under **Settings → Devices & services → CODE27 Codie**, select the pencil, and choose an **Area**. The Character then knows which room "here" is, as a Home Assistant voice satellite does:
+
+- "Turn on the lights" or "turn off the lights in here" acts on the lights in the Codie's Area only. The same goes for `turn_on`, `turn_off`, `light_set` and `set_position` whenever the request names no device, Area or floor.
+- When a name matches devices in several Areas, such as two lamps called "Lamp", the one in the Codie's Area is chosen instead of asking which one.
+
+A request that names a device or Area works as before, wherever it is. If the Codie has no Area, "turn off the lights" turns off every Exposed light. You can move the Codie to another Area at any time; the next request uses the new one.
+
 ## Timers
 
 A Timer makes the Character act on the home later: "Hey Codie, turn off the kitchen lamp in 20 minutes". The Character sets it with `timer_start`, giving a **Command** (a short home-control sentence such as "turn off the kitchen lamp"), a delay and, if it wants, a name. When the Timer ends, Home Assistant runs the Command.
