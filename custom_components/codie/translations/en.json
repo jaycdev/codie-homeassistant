@@ -65,6 +65,21 @@
         "name": "Screen brightness"
       }
     },
+    "select": {
+      "character": {
+        "name": "Character"
+      }
+    },
+    "sensor": {
+      "active_character": {
+        "name": "Active Character",
+        "state_attributes": {
+          "slot": {
+            "name": "Slot"
+          }
+        }
+      }
+    },
     "switch": {
       "screen": {
         "name": "Screen"
@@ -132,6 +147,9 @@
     },
     "setting_music_volume_failed": {
       "message": "The Codie could not set the Music volume: {error}"
+    },
+    "character_unknown": {
+      "message": "The Codie has no Character called {option}. Its Characters may have changed; try again."
     }
   }
 }
