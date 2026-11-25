@@ -147,14 +147,45 @@ class FakeCodie:
     ai_language: str = "ja"
     # What `volume_max` says; the real Codie reports 100 once its music player is ready.
     music_volume_max: int | None = 100
-    # SET_VOLUME is queued: it takes effect on this many playback reads after the POST. None:
+    # A command is queued: it takes effect on this many playback reads after the POST. None:
     # never, as when the Codie is busy.
     music_apply_after_reads: int | None = 2
+    # Whether the playback says `applied` once a command ran; if not, it only shows in the state.
+    music_confirms: bool = True
     # Report this `error_code` for the command instead of applying it.
     music_error_code: str | None = None
     # Like the real Codie, a Music volume is rounded down to one of this many steps above 0.
     music_volume_steps: int = 11
-    # The last SET_VOLUME as playback reports it, and how many reads it has had.
+    # What the music player is doing: IDLE, LOADING, PLAYING, PAUSED, COMPLETED or FAILED.
+    music_status: str = "PAUSED"
+    # The tracks on the card.
+    music_tracks: list[dict[str, Any]] = field(
+        default_factory=lambda: [
+            {
+                "track_id": "local:/music/one.mp3",
+                "track_name": "Morning Light",
+                "artist": "The Codies",
+                "album": "Desk Songs",
+                "duration_ms": 200_000,
+            },
+            {
+                "track_id": "local:/music/two.mp3",
+                "track_name": "Evening Hum",
+                "artist": "The Codies",
+                "album": "Desk Songs",
+                "duration_ms": 180_000,
+            },
+        ]
+    )
+    # The queue NEXT and PREVIOUS move through, as indexes into `music_tracks`; a track can be
+    # in it more than once. Entry i has the ID `entry-i`. Then the current entry (None: none).
+    music_queue: list[int] = field(default_factory=lambda: [0, 1])
+    music_entry: int | None = 0
+    music_position_ms: int = 30_000
+    # Whether the music page is open, that is whether the Codie is in Music mode. Every
+    # command except SET_VOLUME needs it.
+    music_page_open: bool = True
+    # The last command as playback reports it, and how many reads it has had.
     _music_command: dict[str, Any] | None = None
     _music_reads: int = 0
     brightness: int | None = 70
@@ -191,6 +222,7 @@ class FakeCodie:
         app.router.add_put(f"{API}/data/user/character", self._character_put)
         app.router.add_get(f"{API}/data/user/music/playback", self._playback)
         app.router.add_post(f"{API}/data/user/music/control", self._music_control)
+        app.router.add_get(f"{API}/data/user/music/page", self._music_page)
         app.router.add_get(f"{API}/data/user/device/brightness", self._brightness_get)
         app.router.add_put(f"{API}/data/user/device/brightness", self._brightness_put)
         app.router.add_get(f"{API}/data/user/device/screen", self._screen_get)
@@ -574,15 +606,33 @@ class FakeCodie:
             ):
                 if self.music_error_code is not None:
                     command["error_code"] = self.music_error_code
-                else:
-                    self.music_volume = self._music_level(command["volume"])
-                    command["applied"] = True
+                elif not command["ran"]:
+                    self._apply_music_command(command["body"])
+                    command["ran"] = True
+                    command["applied"] = self.music_confirms
         data: dict[str, Any] = {}
         if self.music_volume_max is not None:
             data["volume_max"] = self.music_volume_max
-        # Like the real Codie, leave out a field that is zero.
+        # Like the real Codie, leave out a field that is zero or empty.
         if self.music_volume:
             data["volume_level"] = self.music_volume
+        if self.music_status not in ("", "IDLE"):
+            data["status"] = self.music_status
+            if self.music_status == "PLAYING":
+                data["is_playing"] = True
+        if self.music_queue:
+            data["queue"] = {
+                "entries": [
+                    {"id": f"entry-{i}", "track_id": self.music_tracks[track]["track_id"]}
+                    for i, track in enumerate(self.music_queue)
+                ]
+            }
+        if self.music_entry is not None:
+            data["queue"]["current_entry_id"] = f"entry-{self.music_entry}"
+            track = self.music_tracks[self.music_queue[self.music_entry]]
+            data.update({k: v for k, v in track.items() if v})
+            if self.music_position_ms:
+                data["position_ms"] = self.music_position_ms
         if command is not None:
             data["request_id"] = command["request_id"]
             data["applied"] = command["applied"]
@@ -599,6 +649,27 @@ class FakeCodie:
             step = 1
         return step * 100 // steps
 
+    def _apply_music_command(self, body: dict[str, Any]) -> None:
+        """Run a queued command, the way the real Codie does once it gets to it."""
+        action = body["action"]
+        if action == "SET_VOLUME":
+            self.music_volume = self._music_level(body["volume_level"])
+        elif action == "PLAY":
+            if self.music_entry is None:
+                self.music_entry = 0
+            self.music_status = "PLAYING"
+        elif action == "PAUSE":
+            self.music_status = "PAUSED"
+        elif action == "STOP":
+            # STOP clears the current track and keeps the queue.
+            self.music_status = "IDLE"
+            self.music_entry = None
+            self.music_position_ms = 0
+        elif action in ("NEXT", "PREVIOUS"):
+            step = 1 if action == "NEXT" else -1
+            self.music_entry = ((self.music_entry or 0) + step) % len(self.music_queue)
+            self.music_position_ms = 0
+
     async def _music_control(self, request: web.Request) -> web.Response:
         body = await request.json()
         if self.setting_write_error is not None:
@@ -607,15 +678,33 @@ class FakeCodie:
             uuid.UUID(body["request_id"])
         except KeyError, ValueError:
             return _error(400, "INVALID_REQUEST")
-        if body.get("action") != "SET_VOLUME" or not isinstance(body.get("volume_level"), int):
+        action = body.get("action")
+        if action == "SET_VOLUME":
+            if set(body) != {"action", "request_id", "volume_level"} or not isinstance(
+                body["volume_level"], int
+            ):
+                return _error(400, "INVALID_REQUEST")
+        elif action in ("PLAY", "PAUSE", "STOP", "NEXT", "PREVIOUS"):
+            # Without a target, PLAY resumes the current entry.
+            if set(body) != {"action", "request_id"}:
+                return _error(400, "INVALID_REQUEST")
+            if not self.music_page_open:
+                return _error(409, "MODE_INACTIVE")
+        else:
             return _error(400, "INVALID_REQUEST")
         self._music_reads = 0
         self._music_command = {
             "request_id": body["request_id"],
-            "volume": body["volume_level"],
+            "body": body,
+            "ran": False,
             "applied": False,
         }
         return web.json_response({"success": True, "data": {"request_id": body["request_id"]}})
+
+    async def _music_page(self, request: web.Request) -> web.Response:
+        # Like the real Codie, leave out a field that is false.
+        data = {"is_open": True} if self.music_page_open else {}
+        return web.json_response({"success": True, "data": data})
 
     async def _brightness_get(self, request: web.Request) -> web.Response:
         return web.json_response(

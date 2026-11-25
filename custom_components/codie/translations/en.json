@@ -49,6 +49,16 @@
         "name": "Connected"
       }
     },
+    "media_player": {
+      "music": {
+        "name": "Music",
+        "state_attributes": {
+          "music_mode": {
+            "name": "Music mode"
+          }
+        }
+      }
+    },
     "notify": {
       "announce": {
         "name": "Announce"
@@ -132,6 +142,15 @@
     },
     "setting_music_volume_failed": {
       "message": "The Codie could not set the Music volume: {error}"
+    },
+    "music_command_failed": {
+      "message": "The Codie could not run the music command: {error}"
+    },
+    "music_command_not_confirmed": {
+      "message": "The Codie received the music command but did not confirm it ran: {error}"
+    },
+    "music_mode_inactive": {
+      "message": "The Codie is not in Music mode. Open its music player on the Codie first; only the volume works without it."
     }
   }
 }

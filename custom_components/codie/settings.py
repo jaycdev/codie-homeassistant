@@ -6,13 +6,14 @@ import asyncio
 import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from datetime import timedelta
+from datetime import datetime, timedelta
 from enum import StrEnum
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ConfigEntryAuthFailed, HomeAssistantError
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
+from homeassistant.util import dt as dt_util
 
 from .api import (
     CodieApiError,
@@ -20,6 +21,7 @@ from .api import (
     CodieClient,
     CodieConnectionError,
     CodieError,
+    CodieMusicPlayback,
     CodieNotConfirmedError,
     CodieResponseError,
 )
@@ -29,8 +31,8 @@ from .errors import failed, unreachable_error
 _LOGGER = logging.getLogger(__name__)
 
 UPDATE_INTERVAL = timedelta(seconds=30)
-# After a Music volume change the Codie only queues the command. Ask how it went this often,
-# for this long; if it has not said by then, the Music volume it reports decides.
+# The Codie only queues a music command. Ask how it went this often, for this long; if it has
+# not said by then, the playback it reports decides.
 MUSIC_CONFIRM_INTERVAL_S = 0.5
 MUSIC_CONFIRM_TIMEOUT_S = 3.0
 # The Codie has this many Music volume steps above 0 and rounds a level down to one, so it
@@ -43,21 +45,27 @@ class SettingGroup(StrEnum):
 
     VOICE = "voice"
     MUSIC = "music"
+    MUSIC_MODE = "music_mode"
     BRIGHTNESS = "brightness"
     SCREEN = "screen"
     LIGHTS = "lights"
 
 
-class CodieMusicVolumeError(CodieError):
-    """The Codie took the Music volume command but could not run it."""
+class CodieMusicCommandError(CodieError):
+    """The Codie took the music command `action` but could not run it."""
 
-    def __init__(self, reason: str) -> None:
+    def __init__(self, action: str, reason: str) -> None:
         super().__init__(reason)
+        self.action = action
         self.reason = reason
 
 
-class CodieMusicVolumeNotConfirmedError(CodieError):
-    """The Codie did not say it ran the Music volume command, and the Music volume differs."""
+class CodieMusicCommandNotConfirmedError(CodieError):
+    """The Codie did not say it ran the music command `action`, and the playback doesn't show it."""
+
+    def __init__(self, action: str, reason: str) -> None:
+        super().__init__(reason)
+        self.action = action
 
 
 @dataclass(frozen=True)
@@ -71,6 +79,11 @@ class CodieSettings:
     screen_on: bool | None = None
     side_lights: bool | None = None
     music_side_lights: bool | None = None
+    # The music player's state, None while it is unknown, and when it was read, which is when
+    # its position was right.
+    music_playback: CodieMusicPlayback | None = None
+    music_read_at: datetime | None = None
+    music_mode: bool | None = None
     # The groups that cannot be shown: their read failed, or the Codie says they cannot be used
     # (the music player is not ready, or the brightness cannot be set).
     unavailable: frozenset[SettingGroup] = frozenset()
@@ -80,10 +93,16 @@ def _write_error(err: CodieError) -> HomeAssistantError:
     """Turn a failed write into a Home Assistant error."""
     if (unreachable := unreachable_error(err, "setting")) is not None:
         return unreachable
-    if isinstance(err, CodieNotConfirmedError | CodieMusicVolumeNotConfirmedError):
+    if isinstance(err, CodieMusicCommandNotConfirmedError) and err.action != "SET_VOLUME":
+        return failed("music_command_not_confirmed", error=str(err))
+    if isinstance(err, CodieNotConfirmedError | CodieMusicCommandNotConfirmedError):
         return failed("setting_not_confirmed", error=str(err))
-    if isinstance(err, CodieMusicVolumeError):
-        return failed("setting_music_volume_failed", error=err.reason)
+    if isinstance(err, CodieMusicCommandError):
+        if err.action == "SET_VOLUME":
+            return failed("setting_music_volume_failed", error=err.reason)
+        return failed("music_command_failed", error=err.reason)
+    if isinstance(err, CodieApiError) and err.code == "MODE_INACTIVE":
+        return failed("music_mode_inactive")
     return failed("setting_failed", error=str(err))
 
 
@@ -92,21 +111,25 @@ def _music_step(volume: int) -> int:
     return round(volume * MUSIC_VOLUME_STEPS / 100)
 
 
-async def async_set_music_volume(client: CodieClient, volume: int) -> None:
-    """Set the Music volume to the Codie's step nearest `volume`, and ask whether it ran.
+# Given the playback from before a music command and the latest one, why the command does not
+# show as run, or None if it does.
+type MusicCommandCheck = Callable[[CodieMusicPlayback, CodieMusicPlayback], str | None]
 
-    The level sent is the lowest one in that step, since the Codie rounds down; the level it
-    reports afterwards may still differ from `volume`. A command it reports as applied is a
-    success whatever the level.
-    Raises `CodieMusicVolumeError` if it reports an error for this command. A command that
+
+async def _async_run_music_command(
+    client: CodieClient, action: str, fields: dict[str, int], settled: MusicCommandCheck
+) -> None:
+    """Send the music command `action` with `fields`, and ask until the Codie says it ran.
+
+    A command it reports as applied is a success whatever the playback shows.
+    Raises `CodieMusicCommandError` if it reports an error for this command. A command that
     another one replaced is left to that one. If the Codie has said nothing by the deadline,
-    this succeeds only when the Music volume it reports is already in that step, and otherwise
-    raises `CodieMusicVolumeNotConfirmedError`.
+    this succeeds only if `settled` finds the command shows in the playback, and otherwise
+    raises `CodieMusicCommandNotConfirmedError` with the reason `settled` gave.
     """
     # The command the Codie last took, so that an older one is not taken for a newer one.
-    before = (await client.async_get_music_playback()).request_id
-    step = _music_step(volume)
-    request_id = await client.async_set_music_volume(-(-step * 100 // MUSIC_VOLUME_STEPS))
+    before = await client.async_get_music_playback()
+    request_id = await client.async_music_control(action, **fields)
     loop = asyncio.get_running_loop()
     deadline = loop.time() + MUSIC_CONFIRM_TIMEOUT_S
     while True:
@@ -114,20 +137,78 @@ async def async_set_music_volume(client: CodieClient, volume: int) -> None:
         playback = await client.async_get_music_playback()
         if playback.request_id == request_id:
             if playback.error_code:
-                raise CodieMusicVolumeError(playback.error_code)
+                raise CodieMusicCommandError(action, playback.error_code)
             if playback.applied:
                 return
-        elif playback.request_id not in (None, before):
-            # Another write replaced ours; its own wait reports how that went.
+        elif playback.request_id not in (None, before.request_id):
+            # Another command replaced ours; its own wait reports how that went.
             return
         if loop.time() >= deadline:
-            if playback.volume is not None and _music_step(playback.volume) == step:
+            if (reason := settled(before, playback)) is None:
                 return
-            if playback.volume is None:
-                raise CodieMusicVolumeNotConfirmedError("the Music player is not ready")
-            raise CodieMusicVolumeNotConfirmedError(
-                f"the Music volume is {playback.volume}, not {volume}"
-            )
+            raise CodieMusicCommandNotConfirmedError(action, reason)
+
+
+async def async_set_music_volume(client: CodieClient, volume: int) -> None:
+    """Set the Music volume to the Codie's step nearest `volume`, and ask whether it ran.
+
+    The level sent is the lowest one in that step, since the Codie rounds down; the level it
+    reports afterwards may still differ from `volume`. If the Codie has not said whether it ran
+    by the deadline, this succeeds only when the Music volume it reports is already in that
+    step. See `_async_run_music_command` for the rest.
+    """
+    step = _music_step(volume)
+
+    def settled(_before: CodieMusicPlayback, playback: CodieMusicPlayback) -> str | None:
+        if playback.volume is None:
+            return "the Music player is not ready"
+        if _music_step(playback.volume) != step:
+            return f"the Music volume is {playback.volume}, not {volume}"
+        return None
+
+    level = -(-step * 100 // MUSIC_VOLUME_STEPS)
+    await _async_run_music_command(client, "SET_VOLUME", {"volume_level": level}, settled)
+
+
+def _status_is(*statuses: str) -> MusicCommandCheck:
+    """A `MusicCommandCheck` that looks for the music player's status to be one of `statuses`."""
+
+    def settled(_before: CodieMusicPlayback, playback: CodieMusicPlayback) -> str | None:
+        # The Codie leaves out a status that is IDLE.
+        status = playback.status or "IDLE"
+        return None if status in statuses else f"the Music player is {status.lower()}"
+
+    return settled
+
+
+def _track_changed(before: CodieMusicPlayback, playback: CodieMusicPlayback) -> str | None:
+    """A `MusicCommandCheck` that looks for the queue entry to differ from the one before.
+
+    The entry, not the track, since a track can be in the queue more than once. Without a
+    queue the track decides.
+    """
+    if (playback.entry_id, playback.track_id) != (before.entry_id, before.track_id):
+        return None
+    return "the track did not change"
+
+
+# How the playback shows that each transport command ran, should the Codie not say.
+_MUSIC_COMMAND_CHECKS: dict[str, MusicCommandCheck] = {
+    "PLAY": _status_is("PLAYING", "LOADING"),
+    "PAUSE": _status_is("PAUSED"),
+    "STOP": _status_is("IDLE", "COMPLETED"),
+    "NEXT": _track_changed,
+    "PREVIOUS": _track_changed,
+}
+
+
+async def async_music_command(client: CodieClient, action: str) -> None:
+    """Run the transport command `action`: PLAY, PAUSE, STOP, NEXT or PREVIOUS.
+
+    The Codie only takes it in Music mode. See `_async_run_music_command` for how it is
+    confirmed.
+    """
+    await _async_run_music_command(client, action, {}, _MUSIC_COMMAND_CHECKS[action])
 
 
 class CodieSettingsCoordinator(DataUpdateCoordinator[CodieSettings]):
@@ -164,6 +245,8 @@ class CodieSettingsCoordinator(DataUpdateCoordinator[CodieSettings]):
         try:
             voice_volume = await read(SettingGroup.VOICE, read_voice_volume)
             playback = await read(SettingGroup.MUSIC, client.async_get_music_playback)
+            music_read_at = dt_util.utcnow()
+            music_mode = await read(SettingGroup.MUSIC_MODE, client.async_get_music_mode)
             brightness = await read(SettingGroup.BRIGHTNESS, client.async_get_brightness)
             screen_on = await read(SettingGroup.SCREEN, client.async_get_screen)
             lights = await read(SettingGroup.LIGHTS, client.async_get_light_switches)
@@ -185,6 +268,9 @@ class CodieSettingsCoordinator(DataUpdateCoordinator[CodieSettings]):
             screen_on=screen_on,
             side_lights=lights.side_lights if lights else None,
             music_side_lights=lights.music_side_lights if lights else None,
+            music_playback=playback,
+            music_read_at=music_read_at if playback else None,
+            music_mode=music_mode,
             unavailable=frozenset(unavailable),
         )
 

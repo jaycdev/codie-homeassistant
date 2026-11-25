@@ -402,6 +402,7 @@ async def test_a_setting_that_cannot_be_read_leaves_the_others_available(
 SETTING_PATHS = [
     "/data/user/slot",
     "/data/user/music/playback",
+    "/data/user/music/page",
     "/data/user/device/brightness",
     "/data/user/device/screen",
     "/data/user/light-master-switch",
