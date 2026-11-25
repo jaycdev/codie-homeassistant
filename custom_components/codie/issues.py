@@ -36,6 +36,11 @@ _NOT_A_REFUSAL = frozenset(
 )
 
 
+def is_refusal(err: CodieApiError) -> bool:
+    """Whether the Codie refused the catalog itself, so sending it again would not help."""
+    return err.status < HTTPStatus.INTERNAL_SERVER_ERROR and err.status not in _NOT_A_REFUSAL
+
+
 class CodieIssues:
     """Creates and clears the repair issues of one Codie entry.
 
@@ -59,7 +64,7 @@ class CodieIssues:
         """The Codie answered the catalog's PUT with `err`, or None if it accepted it."""
         if err is None:
             self._delete(ISSUE_CATALOG_REJECTED)
-        elif err.status < 500 and err.status not in _NOT_A_REFUSAL:
+        elif is_refusal(err):
             self._create(ISSUE_CATALOG_REJECTED, ISSUE_CATALOG_REJECTED, error=_describe(err))
 
     @callback
@@ -80,10 +85,16 @@ class CodieIssues:
             )
 
     def _create(self, issue_id: str, translation_key: str, **placeholders: str) -> None:
+        if self._hass.config_entries.async_get_entry(self._entry.entry_id) is None:
+            # A request still in flight when the entry was removed; Home Assistant refuses to
+            # link an issue to an entry it no longer has.
+            return
         ir.async_create_issue(
             self._hass,
             DOMAIN,
             f"{self._entry.entry_id}_{issue_id}",
+            # Linked, so Home Assistant removes it with the entry.
+            config_entry_id=self._entry.entry_id,
             is_fixable=False,
             severity=ir.IssueSeverity.WARNING,
             translation_key=translation_key,

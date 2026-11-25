@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections.abc import Callable, Generator
 from typing import Any
 from unittest.mock import patch
@@ -13,10 +14,11 @@ from homeassistant.const import EVENT_COMPONENT_LOADED, EVENT_HOMEASSISTANT_STAR
 from homeassistant.core import CoreState, HomeAssistant
 from homeassistant.helpers import intent
 from homeassistant.helpers import issue_registry as ir
+from homeassistant.helpers.event import async_call_later
 from homeassistant.setup import async_setup_component
 from pytest_homeassistant.common import MockConfigEntry
 
-from custom_components.codie.api import CodieApiError
+from custom_components.codie.api import CodieApiError, CodieClient
 from custom_components.codie.const import DOMAIN
 from custom_components.codie.schema import SchemaLimitError
 
@@ -25,6 +27,7 @@ from .test_resilience import CLOSES_A_LIVE_SOCKET
 from .test_tools import INTEGRATION_ID, make_entry, setup, wait_connected
 
 PUT = "custom_components.codie.api.CodieClient.async_put_tool_integration"
+CALL_LATER = "custom_components.codie.async_call_later"
 
 
 @pytest.fixture(autouse=True)
@@ -373,3 +376,118 @@ async def test_removing_the_entry_clears_its_issues(
     await hass.async_block_till_done()
 
     assert not entry_issues(hass, entry)
+
+
+# --- refreshing the catalog ----------------------------------------------------------------
+
+
+def flaky_put(error: CodieApiError, times: int = 1) -> Callable[..., Any]:
+    """A catalog PUT that fails with `error` `times` times, then reaches the fake Codie."""
+    real = CodieClient.async_put_tool_integration
+    left = [times]
+
+    async def put(self: CodieClient, *args: Any) -> dict[str, Any]:
+        if left[0]:
+            left[0] -= 1
+            raise error
+        return await real(self, *args)
+
+    return put
+
+
+def add_vacuum(hass: HomeAssistant) -> None:
+    """An Assist tool for vacuums appears and a component loads, so the catalog changes."""
+    register_intent(hass, "HassVacuumStart")
+    hass.bus.async_fire(EVENT_COMPONENT_LOADED, {"component": "llm"})
+
+
+@CLOSES_A_LIVE_SOCKET
+async def test_a_failed_refresh_is_tried_again_later(
+    hass: HomeAssistant, fake_codie: FakeCodie
+) -> None:
+    """Nothing else may change for a long while, so a failed refresh does not wait for it."""
+    entry = await setup(hass, fake_codie)
+    assert "vacuum_start" not in catalog_tools(fake_codie)
+
+    with (
+        patch("custom_components.codie.REFRESH_RETRY_S", 0.05),
+        patch(PUT, flaky_put(CodieApiError(503, "BUSY", "try later"))),
+    ):
+        add_vacuum(hass)
+        await wait_for(lambda: "vacuum_start" in catalog_tools(fake_codie))
+
+    assert entry.state is ConfigEntryState.LOADED
+
+
+async def test_unloading_cancels_a_retry_that_is_waiting(
+    hass: HomeAssistant, fake_codie: FakeCodie
+) -> None:
+    """The test fails on a timer left behind, so this checks the retry is cancelled."""
+    entry = await setup(hass, fake_codie)
+
+    with (
+        patch(PUT, side_effect=CodieApiError(503, "BUSY", "try later")),
+        patch(CALL_LATER, wraps=async_call_later) as later,
+    ):
+        add_vacuum(hass)
+        await wait_for(lambda: later.called)
+
+    assert await hass.config_entries.async_unload(entry.entry_id)
+    await hass.async_block_till_done()
+
+
+@CLOSES_A_LIVE_SOCKET
+async def test_a_long_outage_is_logged_once(
+    hass: HomeAssistant, fake_codie: FakeCodie, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Each retry that fails again logs at debug; the recovery is logged once."""
+    caplog.set_level(logging.DEBUG, "custom_components.codie")
+    entry = await setup(hass, fake_codie)
+
+    with (
+        patch("custom_components.codie.REFRESH_RETRY_S", 0.05),
+        patch(PUT, flaky_put(CodieApiError(503, "BUSY", "try later"), times=3)),
+    ):
+        add_vacuum(hass)
+        await wait_for(lambda: "vacuum_start" in catalog_tools(fake_codie))
+        await hass.async_block_till_done()
+
+    failures = [r for r in caplog.records if "Could not refresh" in r.getMessage()]
+    assert [r.levelname for r in failures] == ["WARNING", "DEBUG", "DEBUG"]
+    assert "The tools on the Codie are up to date again" in caplog.text
+    assert entry.state is ConfigEntryState.LOADED
+
+
+async def test_a_refused_catalog_is_not_retried(hass: HomeAssistant, fake_codie: FakeCodie) -> None:
+    """The Codie would refuse the same Tools again; the repair issue tells the user instead."""
+    entry = await setup(hass, fake_codie)
+
+    with (
+        patch(PUT, side_effect=CodieApiError(400, "INVALID_TOOL_SCHEMA", "no")),
+        patch(CALL_LATER, wraps=async_call_later) as later,
+    ):
+        add_vacuum(hass)
+        await wait_for(lambda: issue(hass, entry, "catalog_rejected") is not None)
+        await hass.async_block_till_done()
+
+    later.assert_not_called()
+
+
+async def test_a_refresh_back_to_the_tools_the_codie_holds_clears_a_refused_catalog(
+    hass: HomeAssistant, fake_codie: FakeCodie
+) -> None:
+    entry = await setup(hass, fake_codie)
+
+    with patch(PUT, side_effect=CodieApiError(400, "INVALID_TOOL_SCHEMA", "no")):
+        add_vacuum(hass)
+        await wait_for(lambda: issue(hass, entry, "catalog_rejected") is not None)
+
+    found = issue(hass, entry, "catalog_rejected")
+    assert found is not None
+    # Linked to its entry, so Home Assistant removes it with the entry.
+    assert found.config_entry_id == entry.entry_id
+
+    # The vacuum goes again: the Codie still holds the Tools it accepted last.
+    intent.async_remove(hass, "HassVacuumStart")
+    hass.bus.async_fire(EVENT_COMPONENT_LOADED, {"component": "llm"})
+    await wait_for(lambda: issue(hass, entry, "catalog_rejected") is None)
