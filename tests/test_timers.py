@@ -241,7 +241,7 @@ async def japanese_timer(hass: HomeAssistant) -> AsyncGenerator[AsyncMock]:
     Timers are always unloaded, so a failed test leaves no callback scheduled.
     """
     announce = AsyncMock()
-    timers = CodieTimers(hass, timers_store(hass, "entry"), "ja", announce)
+    timers = CodieTimers(hass, timers_store(hass, "entry"), "ja", None, announce)
     try:
         with patch.object(timers, "_async_check", AsyncMock()):
             await timers.async_start({"command": JAPANESE_COMMAND, "minutes": 20})
