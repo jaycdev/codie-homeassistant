@@ -121,9 +121,8 @@ async def test_voice_volume_follows_the_active_slot(
 ) -> None:
     entry = await setup(hass, fake_codie)
     assert state_of(hass, VOICE_VOLUME) == "30"
-    # The Character is asked for in the active Slot: without it the Codie answers for Slot 1.
-    (read, *_) = [r for r in fake_codie.requests_to("/data/user/character")]
-    assert read.raw_path.endswith("?slot=3")
+    # It comes with the Character list, so the Character is not read on its own.
+    assert [r for r in fake_codie.requests_to("/data/user/character") if r.method == "GET"] == []
 
     fake_codie.slot = 5
     await refresh(hass, entry)

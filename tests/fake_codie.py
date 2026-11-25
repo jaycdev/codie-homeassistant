@@ -191,7 +191,6 @@ class FakeCodie:
         app.router.add_get(f"{API}/data/user/slot", self._slot)
         app.router.add_put(f"{API}/data/user/slot", self._slot_put)
         app.router.add_get(f"{API}/data/user/character/list", self._character_list)
-        app.router.add_get(f"{API}/data/user/character", self._character_get)
         app.router.add_put(f"{API}/data/user/character", self._character_put)
         app.router.add_get(f"{API}/data/user/music/playback", self._playback)
         app.router.add_post(f"{API}/data/user/music/control", self._music_control)
@@ -563,16 +562,6 @@ class FakeCodie:
                     {"slot_number": slot, "name": name, "tts_volume": self.voice_volumes[slot]}
                     for slot, name in sorted(self.character_names.items())
                 ],
-            }
-        )
-
-    async def _character_get(self, request: web.Request) -> web.Response:
-        # Without `slot` the real Codie answers for Slot 1, not for the active one.
-        slot = int(request.query.get("slot", 1))
-        return web.json_response(
-            {
-                "success": True,
-                "data": {"slot_number": slot, "tts_volume": self.voice_volumes[slot]},
             }
         )
 

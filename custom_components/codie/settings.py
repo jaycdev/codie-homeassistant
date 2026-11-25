@@ -9,7 +9,6 @@ from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
 from datetime import timedelta
 from enum import StrEnum
-from functools import partial
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
@@ -195,15 +194,11 @@ class CodieSettingsCoordinator(DataUpdateCoordinator[CodieSettings]):
 
         try:
             slot = await read(SettingGroup.CHARACTER, client.async_get_slot)
-            voice_volume = characters = None
-            if slot is None:
-                # Voice volume belongs to the Slot.
-                unavailable.add(SettingGroup.VOICE)
-            else:
-                voice_volume = await read(
-                    SettingGroup.VOICE, partial(client.async_get_voice_volume, slot)
-                )
-                characters = await read(SettingGroup.CHARACTER, client.async_get_characters)
+            characters = (
+                None
+                if slot is None
+                else await read(SettingGroup.CHARACTER, client.async_get_characters)
+            )
             playback = await read(SettingGroup.MUSIC, client.async_get_music_playback)
             brightness = await read(SettingGroup.BRIGHTNESS, client.async_get_brightness)
             screen_on = await read(SettingGroup.SCREEN, client.async_get_screen)
@@ -212,6 +207,10 @@ class CodieSettingsCoordinator(DataUpdateCoordinator[CodieSettings]):
             raise ConfigEntryAuthFailed(f"The Codie rejected our credentials: {err}") from err
         except CodieError as err:
             raise UpdateFailed(f"Cannot read the Codie's settings: {err}") from err
+        # Voice volume belongs to the active Slot, and comes with the Character list.
+        active = characters.get(slot) if characters and slot is not None else None
+        if active is None:
+            unavailable.add(SettingGroup.VOICE)
         if unavailable == set(SettingGroup):
             raise UpdateFailed("The Codie answered every settings request with an error")
 
@@ -224,8 +223,8 @@ class CodieSettingsCoordinator(DataUpdateCoordinator[CodieSettings]):
             unavailable.add(SettingGroup.BRIGHTNESS)
         return CodieSettings(
             slot=slot,
-            characters=characters or {},
-            voice_volume=voice_volume,
+            characters={number: c.name for number, c in (characters or {}).items()},
+            voice_volume=active.voice_volume if active else None,
             music_volume=playback.volume if playback else None,
             brightness=brightness.level if brightness else None,
             screen_on=screen_on,

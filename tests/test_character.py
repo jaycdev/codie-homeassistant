@@ -136,6 +136,19 @@ async def test_a_name_only_in_the_presentation_is_used(
 
     assert options(hass) == ["Aiko", "Nova"]
     assert state_of(hass, ACTIVE_CHARACTER) == "Nova"
+    # The entry has no `tts_volume`, so the Voice volume is not known.
+    assert state_of(hass, VOICE_VOLUME) == STATE_UNKNOWN
+
+
+async def test_a_slot_missing_from_the_list_has_no_voice_volume(
+    hass: HomeAssistant, fake_codie: FakeCodie
+) -> None:
+    del fake_codie.character_names[3]
+    await setup(hass, fake_codie)
+
+    assert state_of(hass, VOICE_VOLUME) == STATE_UNAVAILABLE
+    assert state_of(hass, CHARACTER) == STATE_UNKNOWN
+    assert state_of(hass, ACTIVE_CHARACTER) == STATE_UNKNOWN
 
 
 async def test_an_option_that_went_away_is_refused(
@@ -164,7 +177,7 @@ async def test_a_refused_switch_raises_and_reads_the_slot_again(
     assert state_of(hass, CHARACTER) == "Cleo"
 
 
-async def test_without_the_character_list_only_the_character_entities_are_unavailable(
+async def test_without_the_character_list_the_voice_volume_is_unavailable_too(
     hass: HomeAssistant, fake_codie: FakeCodie
 ) -> None:
     entry = await setup(hass, fake_codie)
@@ -174,7 +187,8 @@ async def test_without_the_character_list_only_the_character_entities_are_unavai
 
     assert state_of(hass, ACTIVE_CHARACTER) == STATE_UNAVAILABLE
     assert state_of(hass, CHARACTER) == STATE_UNAVAILABLE
-    assert state_of(hass, VOICE_VOLUME) == "30"
+    assert state_of(hass, VOICE_VOLUME) == STATE_UNAVAILABLE
+    assert state_of(hass, "switch.codie_side_lights") == "on"
 
     fake_codie.character_names = {}
     del fake_codie.overrides["/data/user/character/list"]
