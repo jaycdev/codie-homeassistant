@@ -10,11 +10,12 @@ import json
 import logging
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
-from typing import Any
+from enum import StrEnum
+from typing import TYPE_CHECKING, Any
 
 import probatio
 from homeassistant.components.homeassistant.exposed_entities import async_should_expose
-from homeassistant.core import HomeAssistant, State
+from homeassistant.core import CoreState, HomeAssistant, State
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import area_registry as ar
 from homeassistant.helpers import device_registry as dr
@@ -43,6 +44,9 @@ from .timers import (
     CodieTimers,
     timers_supported,
 )
+
+if TYPE_CHECKING:
+    from .issues import CodieIssues
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -346,7 +350,13 @@ async def _assist_definition(
     assist_name = next(iter(actions.values())) if actions else tool.assist_name
     if (assist_tool := await _assist_tool(hass, assist_name, api_tools)) is None:
         _LOGGER.debug("Assist tool %s is not available; skipping %s", assist_name, tool.name)
-        raise ToolLeftOut(f"Assist tool {assist_name} is not available")
+        raise ToolLeftOut(
+            f"Assist tool {assist_name} is not available",
+            LeftOutKind.CORE_INTENT_MISSING
+            if assist_name in CORE_INTENTS
+            else LeftOutKind.INTENT_MISSING,
+            assist_name,
+        )
     description, parameters = assist_tool.description or "", assist_tool.parameters
     try:
         schema = from_probatio(parameters, serializer)
@@ -359,26 +369,59 @@ async def _assist_definition(
             schema.setdefault("required", []).append("action")
     except SchemaLimitError as err:
         _LOGGER.warning("Skipping tool %s: %s", tool.name, err)
-        raise ToolLeftOut(str(err)) from err
+        raise ToolLeftOut(str(err), LeftOutKind.SCHEMA_DOES_NOT_FIT, assist_name) from err
     if tool.scripts_intro and (scripts := _script_names(hass)):
         description = _list_names(tool.scripts_intro, scripts)
     return description, schema
 
 
+# Registered by Home Assistant's own `intent` integration rather than by a device's. Any
+# other intent is missing whenever no integration for its kind of device is set up, which is
+# by design (ADR-0002).
+CORE_INTENTS = frozenset({"HassTurnOn", "HassTurnOff", "HassSetPosition"})
+
+
+class LeftOutKind(StrEnum):
+    """Why a Tool is left out, for the repair issues to tell apart."""
+
+    # No integration for the intent's kind of device is set up.
+    INTENT_MISSING = "intent_missing"
+    # One of `CORE_INTENTS` is missing, so Assist itself is not fully set up.
+    CORE_INTENT_MISSING = "core_intent_missing"
+    # The Assist tool's parameters do not fit the Codie's limits.
+    SCHEMA_DOES_NOT_FIT = "schema_does_not_fit"
+    # The built-in agent does not support the Codie's AI language.
+    TIMERS_UNAVAILABLE = "timers_unavailable"
+
+
+@dataclass(frozen=True)
+class LeftOut:
+    """Why a Tool is not in the catalog."""
+
+    kind: LeftOutKind
+    reason: str
+    # The Assist tool it lacks or could not use; None for the Timer Tools.
+    assist_name: str | None = None
+
+
 class ToolLeftOut(Exception):
     """A Tool cannot be offered; the message says why."""
+
+    def __init__(self, reason: str, kind: LeftOutKind, assist_name: str | None = None) -> None:
+        super().__init__(reason)
+        self.left_out = LeftOut(kind, reason, assist_name)
 
 
 async def _build_tools(
     hass: HomeAssistant, language: str | None
-) -> tuple[list[dict[str, Any]], dict[str, str]]:
+) -> tuple[list[dict[str, Any]], dict[str, LeftOut]]:
     """The Tool definitions, and the Tools left out, each with the reason.
 
     `language` is the Codie's AI language, which decides whether the Timer Tools are offered.
     """
     api_tools, serializer = await _assist_api_tools(hass)
     tools: list[dict[str, Any]] = []
-    left_out: dict[str, str] = {}
+    left_out: dict[str, LeftOut] = {}
     for tool in TOOLS:
         try:
             if tool.parameters is None:
@@ -387,9 +430,11 @@ async def _build_tools(
                 description, schema = "", copy.deepcopy(dict(tool.parameters))
             else:
                 _LOGGER.debug("Timers are unavailable; skipping %s", tool.name)
-                raise ToolLeftOut(tool.unavailable or "Timers are unavailable")
+                raise ToolLeftOut(
+                    tool.unavailable or "Timers are unavailable", LeftOutKind.TIMERS_UNAVAILABLE
+                )
         except ToolLeftOut as err:
-            left_out[tool.name] = str(err)
+            left_out[tool.name] = err.left_out
             continue
         definition = {
             "name": tool.name,
@@ -422,17 +467,22 @@ class RegisteredCatalog:
 
     tools: list[dict[str, Any]]
     # The Tools that were left out, each with the reason.
-    left_out: dict[str, str]
+    left_out: dict[str, LeftOut]
     # The revision the Codie gave it; None if its reply did not say.
     revision: int | None
 
 
 async def async_register_catalog(
-    hass: HomeAssistant, client: CodieClient, integration_id: str, language: str | None
+    hass: HomeAssistant,
+    client: CodieClient,
+    integration_id: str,
+    language: str | None,
+    issues: CodieIssues | None = None,
 ) -> RegisteredCatalog:
     """Create or update the catalog and return what the Codie now holds.
 
-    On a revision conflict the current revision is read again and the PUT retried.
+    On a revision conflict the current revision is read again and the PUT retried. `issues`
+    hears how the Codie answered the PUT.
     """
     attempt = 0
     while True:
@@ -446,33 +496,45 @@ async def async_register_catalog(
             )
         except CodieApiError as err:
             if err.status != 409 or attempt >= REGISTER_ATTEMPTS:
+                if issues is not None:
+                    issues.catalog_refused(err)
                 raise
             _LOGGER.debug("Catalog revision conflict, re-reading (attempt %s)", attempt)
             continue
+        if issues is not None:
+            issues.catalog_refused(None)
         new_revision = reply.get("revision")
         valid = isinstance(new_revision, int) and not isinstance(new_revision, bool)
         return RegisteredCatalog(tools, left_out, new_revision if valid else None)
 
 
 class CatalogRegistrar:
-    """Keeps the Codie's catalog in step with the Assist tools Home Assistant has."""
+    """Keeps the Codie's catalog in step with the Assist tools Home Assistant has.
+
+    With `issues`, it raises repair issues for Tools left out and for a catalog the Codie
+    refuses, and clears them once that is no longer so.
+    """
 
     def __init__(
-        self, hass: HomeAssistant, client: CodieClient, integration_id: str, language: str | None
+        self,
+        hass: HomeAssistant,
+        client: CodieClient,
+        integration_id: str,
+        language: str | None,
+        issues: CodieIssues | None = None,
     ) -> None:
         self._hass = hass
         self._client = client
         self._integration_id = integration_id
         self._language = language
+        self._issues = issues
         self.catalog: RegisteredCatalog | None = None
         self._lock = asyncio.Lock()
 
     async def async_register(self) -> None:
         """Register the catalog unconditionally."""
         async with self._lock:
-            self.catalog = await async_register_catalog(
-                self._hass, self._client, self._integration_id, self._language
-            )
+            await self._async_register()
 
     async def async_refresh(self) -> bool:
         """Register again if the available Tools changed. Returns whether it did."""
@@ -481,11 +543,26 @@ class CatalogRegistrar:
             if self.catalog is not None and tools == self.catalog.tools:
                 # The same Tools, but a Tool may be left out for another reason now.
                 self.catalog = dataclasses.replace(self.catalog, left_out=left_out)
+                self._report_left_out()
                 return False
-            self.catalog = await async_register_catalog(
-                self._hass, self._client, self._integration_id, self._language
-            )
+            await self._async_register()
             return True
+
+    async def _async_register(self) -> None:
+        self.catalog = await async_register_catalog(
+            self._hass, self._client, self._integration_id, self._language, self._issues
+        )
+        self._report_left_out()
+
+    def _report_left_out(self) -> None:
+        # While Home Assistant starts, integrations are still adding their Assist tools; the
+        # refresh once it has started reports what is still missing.
+        if (
+            self._issues is not None
+            and self.catalog is not None
+            and self._hass.state is CoreState.running
+        ):
+            self._issues.tools_left_out(self.catalog.left_out)
 
 
 def find_tool(name: str) -> CodieTool | None:

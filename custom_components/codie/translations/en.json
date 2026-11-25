@@ -170,5 +170,23 @@
     "character_unknown": {
       "message": "The Codie has no Character called {option}. Its Characters may have changed; try again."
     }
+  },
+  "issues": {
+    "clock_skew": {
+      "title": "The clocks of {name} and Home Assistant differ",
+      "description": "{name} rejects Home Assistant's requests because the time on Home Assistant and the time on the Codie are more than 5 minutes apart. Every request is signed with the time. Check that both show the correct time: that network time (NTP) works on the machine running Home Assistant, and that the Codie is online. This issue goes away once a request works again."
+    },
+    "catalog_rejected": {
+      "title": "{name} refused the Tools",
+      "description": "{name} refused the Tools that Home Assistant offers its Character ({error}), so the Character cannot control your home. Check for an update of the integration or of the Codie's software. If it keeps happening, report it with the error above. This issue goes away once the Codie accepts the Tools."
+    },
+    "core_tool_missing": {
+      "title": "{name} has no {tool} Tool",
+      "description": "The Character on {name} cannot use the `{tool}` Tool, because Home Assistant has no `{assist_tool}` Assist tool. Home Assistant provides it itself, so Assist is not fully set up. Make sure the Conversation integration is loaded: Assist should work under Settings → Voice assistants. If this issue persists after a Home Assistant upgrade, report it. This issue goes away once the Tool is offered."
+    },
+    "tool_unsupported": {
+      "title": "{name} has no {tool} Tool",
+      "description": "The Character on {name} cannot use the `{tool}` Tool, because the parameters of Home Assistant's `{assist_tool}` Assist tool don't fit the Codie's limits: {error}. This can happen after a Home Assistant upgrade; check for an update of the integration. This issue goes away once the Tool is offered."
+    }
   }
 }

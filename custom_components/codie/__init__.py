@@ -3,20 +3,28 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass
 from functools import partial
 from typing import Any
 
 from homeassistant.components.homeassistant.exposed_entities import async_listen_entity_updates
-from homeassistant.config_entries import ConfigEntry
+from homeassistant.config_entries import (
+    SIGNAL_CONFIG_ENTRY_CHANGED,
+    ConfigEntry,
+    ConfigEntryChange,
+    ConfigEntryState,
+)
 from homeassistant.const import CONF_HOST, CONF_PORT, EVENT_COMPONENT_LOADED, Platform
-from homeassistant.core import Event, HomeAssistant, callback
+from homeassistant.core import CoreState, Event, HomeAssistant, callback
 from homeassistant.exceptions import ConfigEntryAuthFailed, ConfigEntryError, ConfigEntryNotReady
 from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.debounce import Debouncer
+from homeassistant.helpers.dispatcher import async_dispatcher_connect
+from homeassistant.helpers.start import async_at_started
 from homeassistant.helpers.typing import ConfigType
 
 from .announce import async_announce, async_register_services
@@ -29,6 +37,7 @@ from .const import (
     DOMAIN,
 )
 from .executor import CodieExecutor
+from .issues import CodieIssues, async_clear_issues
 from .settings import CodieSettingsCoordinator
 from .timers import CodieTimers, async_remove_timers, timers_store
 from .tool_events import ToolRecorder
@@ -66,7 +75,11 @@ class CodieRuntimeData:
 type CodieConfigEntry = ConfigEntry[CodieRuntimeData]
 
 
-def _client_for(hass: HomeAssistant, entry: ConfigEntry[Any]) -> CodieClient:
+def _client_for(
+    hass: HomeAssistant,
+    entry: ConfigEntry[Any],
+    on_clock_skew: Callable[[bool], None] | None = None,
+) -> CodieClient:
     return CodieClient(
         async_get_clientsession(hass),
         entry.data[CONF_HOST],
@@ -76,12 +89,26 @@ def _client_for(hass: HomeAssistant, entry: ConfigEntry[Any]) -> CodieClient:
             user_id=entry.data[CONF_USER_ID],
             local_session_id=entry.data.get(CONF_LOCAL_SESSION_ID, ""),
         ),
+        on_clock_skew,
     )
 
 
 async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
     """Register the integration's actions."""
     async_register_services(hass)
+
+    # Home Assistant does not call `async_unload_entry` for an entry whose setup failed, so
+    # its repair issues are cleared here once it is disabled or stops retrying.
+    @callback
+    def _entry_changed(change: ConfigEntryChange, entry: ConfigEntry[Any]) -> None:
+        if (
+            entry.domain == DOMAIN
+            and change is ConfigEntryChange.UPDATED
+            and (entry.disabled_by is not None or entry.state is ConfigEntryState.NOT_LOADED)
+        ):
+            async_clear_issues(hass, entry.entry_id)
+
+    async_dispatcher_connect(hass, SIGNAL_CONFIG_ENTRY_CHANGED, _entry_changed)
     return True
 
 
@@ -89,7 +116,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: CodieConfigEntry) -> boo
     """Set up a Codie from a config entry."""
     if entry.unique_id is None:
         raise ConfigEntryError("The Codie entry has no unique ID; remove and add it again")
-    client = _client_for(hass, entry)
+    # The issues outlive a setup that fails, so a Codie that keeps refusing us still shows why.
+    # They are cleared once it works, and when the entry is unloaded, disabled or removed.
+    issues = CodieIssues(hass, entry)
+    client = _client_for(hass, entry, issues.clock_skew)
     integration_id: str = entry.data[CONF_INTEGRATION_ID]
 
     # The Character speaks the AI language, not the device's UI language. It is read once here,
@@ -103,7 +133,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: CodieConfigEntry) -> boo
     ai_language = system.get("ai_language")
     language = ai_language if isinstance(ai_language, str) and ai_language else None
 
-    registrar = CatalogRegistrar(hass, client, integration_id, language)
+    registrar = CatalogRegistrar(hass, client, integration_id, language, issues)
     try:
         await registrar.async_register()
     except CodieAuthError as err:
@@ -184,6 +214,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: CodieConfigEntry) -> boo
 
     entry.async_on_unload(hass.bus.async_listen(er.EVENT_ENTITY_REGISTRY_UPDATED, _script_changed))
     entry.async_on_unload(async_listen_entity_updates(hass, "conversation", _expose_changed))
+    if hass.state is not CoreState.running:
+        # Tools left out are only reported once Home Assistant has started.
+        @callback
+        def _started(_hass: HomeAssistant) -> None:
+            debouncer.async_schedule_call()
+
+        entry.async_on_unload(async_at_started(hass, _started))
     entry.async_on_unload(executor.async_close)
     entry.async_on_unload(timers.async_unload)
     entry.async_create_background_task(hass, executor.async_run(), "codie executor")
@@ -192,11 +229,15 @@ async def async_setup_entry(hass: HomeAssistant, entry: CodieConfigEntry) -> boo
 
 async def async_unload_entry(hass: HomeAssistant, entry: CodieConfigEntry) -> bool:
     """Unload a config entry."""
-    return await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
+    unloaded = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
+    if unloaded:
+        async_clear_issues(hass, entry.entry_id)
+    return unloaded
 
 
 async def async_remove_entry(hass: HomeAssistant, entry: ConfigEntry[Any]) -> None:
-    """Delete the Codie's Timers, and its tool integration from the Codie."""
+    """Delete the Codie's Timers and repair issues, and its tool integration from the Codie."""
+    async_clear_issues(hass, entry.entry_id)
     await async_remove_timers(hass, entry.entry_id)
     try:
         await _client_for(hass, entry).async_delete_tool_integration(
