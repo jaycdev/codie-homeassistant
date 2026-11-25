@@ -35,6 +35,19 @@ _Avoid_: normal side lights, LEDs
 **Music side lights**:
 The Codie's LED strip while it is in Music mode.
 
+**Alarm**:
+The Character's own, set by talking to it, at a clock time. It can only speak; it never acts on the home.
+
+**Reminder**:
+The Character's own note to bring something up at a time. Like an Alarm, it can only speak.
+
+**Timer**:
+A countdown the Character sets through Home Assistant that carries a Command and runs it when it ends ("turn off the lights in 20 minutes"). Unlike an Alarm, it acts on the home.
+_Avoid_: delayed action, scheduled command
+
+**Command**:
+A short home-control sentence, written by the Character's model, that a Timer runs when it ends.
+
 **Pairing**:
 The one-time exchange in which the Codie displays a code, the user enters it in Home Assistant, and Home Assistant receives lasting credentials for that Codie.
 
