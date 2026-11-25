@@ -170,6 +170,16 @@ class CodieMusicPlayback:
 
 
 @dataclass(frozen=True)
+class CodieCharacter:
+    """The Character in one Slot, as the Character list reports it."""
+
+    # "" if the Character has no name.
+    name: str
+    # Voice volume (0 to 100); None if the Codie left it out.
+    voice_volume: int | None
+
+
+@dataclass(frozen=True)
 class CodieLightSwitches:
     """The side light switches. Each is None if the Codie left it out of the reply."""
 
@@ -289,15 +299,39 @@ class CodieClient:
             raise CodieResponseError("The Slot reply has no slot_number")
         return slot
 
-    async def async_get_voice_volume(self, slot: int) -> int | None:
-        """Read the Voice volume (0 to 100) of the Character in `slot`.
+    async def async_set_slot(self, slot: int) -> None:
+        """Make `slot` the active Slot, switching to its Character.
 
-        The slot is always passed: without it the Codie answers for Slot 1.
+        The Codie loads the Character's model afterwards; success does not mean it is shown yet.
         """
-        data = _as_dict(
-            await self.async_request("GET", "/data/user/character", query={"slot": str(slot)})
-        )
-        return _number(data, "tts_volume")
+        await self.async_request("PUT", "/data/user/slot", {"slot_number": slot})
+
+    async def async_get_characters(self) -> dict[int, CodieCharacter]:
+        """Read the Character in each Slot, by Slot number.
+
+        Entries without a Slot number are left out.
+        """
+        data = await self.async_request("GET", "/data/user/character/list")
+        if not isinstance(data, list):
+            raise CodieResponseError("The Character list reply has no list")
+        characters: dict[int, CodieCharacter] = {}
+        for item in data:
+            if not isinstance(item, dict):
+                continue
+            slot = _number(item, "slot_number")
+            if slot is None:
+                continue
+            name = item.get("name")
+            if not isinstance(name, str) or not name.strip():
+                # The API also documents `presentation.name` without saying how it differs from
+                # `name`, so it is only a fallback. No Codie seen so far has sent it.
+                presentation = item.get("presentation")
+                name = presentation.get("name") if isinstance(presentation, dict) else None
+            characters[slot] = CodieCharacter(
+                name=name.strip() if isinstance(name, str) else "",
+                voice_volume=_number(item, "tts_volume"),
+            )
+        return characters
 
     async def async_set_voice_volume(self, volume: int) -> None:
         """Set the Voice volume of the active Slot (no `slot_number` means the current one)."""

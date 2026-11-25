@@ -18,7 +18,7 @@ from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
 from . import CodieConfigEntry
 from .api import CodieMusicPlayback
-from .entity import CodieSettingDescription, CodieSettingEntity
+from .entity import CodieWritableSettingDescription, CodieWritableSettingEntity
 from .settings import (
     MUSIC_VOLUME_STEPS,
     CodieSettingsCoordinator,
@@ -36,7 +36,7 @@ PLAYBACK_STATES = {
 
 
 @dataclass(frozen=True, kw_only=True)
-class CodieMusicDescription(MediaPlayerEntityDescription, CodieSettingDescription[int]):
+class CodieMusicDescription(MediaPlayerEntityDescription, CodieWritableSettingDescription[int]):
     """The media player, whose setting is the Music volume."""
 
 
@@ -60,7 +60,7 @@ async def async_setup_entry(
     async_add_entities([CodieMusicPlayer(entry.runtime_data.settings, entry.unique_id, MUSIC)])
 
 
-class CodieMusicPlayer(CodieSettingEntity[int], MediaPlayerEntity):
+class CodieMusicPlayer(CodieWritableSettingEntity[int], MediaPlayerEntity):
     """The Codie's music: what it plays, its controls, and the Music volume."""
 
     _attr_media_content_type = MediaType.MUSIC

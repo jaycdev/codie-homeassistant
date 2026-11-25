@@ -32,7 +32,9 @@ The Codie is added as a device with these entities:
 
 - **Connected** (binary sensor): on while Home Assistant is connected to the Codie and serving its Tools. While it is off, new conversations with the Character have no home-control Tools.
 - **Announce** (notify): see [Announcements](#announcements).
-- **Voice volume** (number, 0–100): how loud the Character speaks, Announcements included. It follows the active Slot: it shows and sets the volume of the Character in that Slot, so it changes when you switch Slots.
+- **Active Character** (sensor): the name of the Character in the active Slot. Its `slot` attribute is the Slot's number.
+- **Character** (select): one option per Slot, named after its Character, and the active one selected. Choosing another switches the Codie to that Slot; the Codie then loads the Character, which can take a moment to show. When two Slots hold Characters with the same name, the options add the Slot (`Aiko (Slot 2)`), and a Slot whose Character has no name is shown as `Slot 4`. Both are unavailable while the Codie does not report its Characters, and so is Voice volume, which is read with them.
+- **Voice volume** (number, 0–100): how loud the Character speaks, Announcements included. It follows the active Slot: it shows and sets the volume of the Character in that Slot, so it changes when you switch Characters, from the Codie or with the Character select.
 - **Music volume** (number, 0–100): how loud the Codie plays music. One level for the whole Codie. It works without the music page open. The Codie only queues the change, so Home Assistant asks it for up to three seconds whether the change ran. The action succeeds once the Codie reports that it applied the change. The Codie has 11 volume steps (0, 9, 18, 27 … 90, 100), so Home Assistant sets the step nearest the level you choose: 40 becomes 36, and 41 becomes 45. It fails if the Codie reports an error, or says nothing within three seconds and its Music volume is not in that step. Unavailable while the Codie's music player is not ready.
 - **Music** (media player): the Codie's music. It is playing, paused, buffering or idle, and shows the track's title, artist, album, length and position; the Codie reports no artwork. The `music_mode` attribute says whether the Codie is in Music mode. Play, pause, stop, next and previous only work in Music mode: open the music player on the Codie first, or the action fails and says so. Its volume is the Music volume, works the same way and needs no Music mode; volume up and down move one of the Codie's 11 steps. Like the Music volume, each control waits up to three seconds for the Codie to report that it ran. If the Codie says nothing in that time, the action still succeeds when the player shows the change (it plays after play, or the track changed after next), and fails otherwise. Unavailable while the Codie's music player is not ready.
 - **Screen** (switch): turns the Codie's screen on and off. It is unknown when the Codie's two screens disagree. If the Codie sent the change but could not confirm it, the action fails.
@@ -165,6 +167,16 @@ data:
 The Character speaks the text in whatever language it is written. Nothing is translated.
 
 The action returns as soon as the Codie accepts the message. It does not wait for the Character to finish speaking. The Codie's screen is never woken: if the Codie is asleep or locked, the action fails with an error that names the reason. Wake the Codie and try again.
+
+### Blueprints
+
+These blueprints make automations for common Announcements. Import one, then create an automation from it under **Settings → Automations & scenes → Blueprints**, and pick your Codie and sensors.
+
+| Blueprint | What it does | |
+| --- | --- | --- |
+| Doorbell | An Announcement the moment a doorbell binary sensor turns on, or a doorbell event entity is pressed. | [![Import blueprint](https://my.home-assistant.io/badges/blueprint_import.svg)](https://my.home-assistant.io/redirect/blueprint_import/?blueprint_url=https%3A%2F%2Fgithub.com%2Fjaycdev%2Fcodie-homeassistant%2Fblob%2Fmain%2Fblueprints%2Fautomation%2Fcodie%2Fdoorbell.yaml) |
+| Appliance finished | A Queued announcement once a power sensor stays below a threshold for a while, such as a washing machine or dishwasher at the end of its cycle. A sensor coming back after a restart doesn't count as finishing. | [![Import blueprint](https://my.home-assistant.io/badges/blueprint_import.svg)](https://my.home-assistant.io/redirect/blueprint_import/?blueprint_url=https%3A%2F%2Fgithub.com%2Fjaycdev%2Fcodie-homeassistant%2Fblob%2Fmain%2Fblueprints%2Fautomation%2Fcodie%2Fappliance_finished.yaml) |
+| Morning briefing | A Queued announcement with today's weather and, optionally, today's calendar events. Given at a chosen time, or at the first presence detected after it. It names fewer events when needed to stay within 200 characters. | [![Import blueprint](https://my.home-assistant.io/badges/blueprint_import.svg)](https://my.home-assistant.io/redirect/blueprint_import/?blueprint_url=https%3A%2F%2Fgithub.com%2Fjaycdev%2Fcodie-homeassistant%2Fblob%2Fmain%2Fblueprints%2Fautomation%2Fcodie%2Fmorning_briefing.yaml) |
 
 ## Troubleshooting
 

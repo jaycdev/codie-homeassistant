@@ -75,6 +75,21 @@
         "name": "Screen brightness"
       }
     },
+    "select": {
+      "character": {
+        "name": "Character"
+      }
+    },
+    "sensor": {
+      "active_character": {
+        "name": "Active Character",
+        "state_attributes": {
+          "slot": {
+            "name": "Slot"
+          }
+        }
+      }
+    },
     "switch": {
       "screen": {
         "name": "Screen"
@@ -151,6 +166,9 @@
     },
     "music_mode_inactive": {
       "message": "The Codie is not in Music mode. Open its music player on the Codie first; only the volume works without it."
+    },
+    "character_unknown": {
+      "message": "The Codie has no Character called {option}. Its Characters may have changed; try again."
     }
   }
 }

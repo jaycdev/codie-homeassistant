@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
+from collections import Counter
+from collections.abc import Awaitable, Callable, Mapping
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from enum import StrEnum
 
@@ -43,6 +44,7 @@ MUSIC_VOLUME_STEPS = 11
 class SettingGroup(StrEnum):
     """The settings are read in groups that fail on their own, and each entity belongs to one."""
 
+    CHARACTER = "character"
     VOICE = "voice"
     MUSIC = "music"
     MUSIC_MODE = "music_mode"
@@ -72,6 +74,9 @@ class CodieMusicCommandNotConfirmedError(CodieError):
 class CodieSettings:
     """What the Codie reported on one poll. None means it did not say."""
 
+    # The active Slot, and the name of the Character in each Slot ("" if it has none).
+    slot: int | None = None
+    characters: Mapping[int, str] = field(default_factory=dict)
     # Voice volume of the Character in the active Slot.
     voice_volume: int | None = None
     music_volume: int | None = None
@@ -86,6 +91,36 @@ class CodieSettings:
     # The groups that cannot be shown: their read failed, or the Codie says they cannot be used
     # (the music player is not ready, or the brightness cannot be set).
     unavailable: frozenset[SettingGroup] = frozenset()
+
+    @property
+    def character(self) -> str | None:
+        """The name of the Character in the active Slot."""
+        return None if self.slot is None else self.characters.get(self.slot) or None
+
+    @property
+    def character_options(self) -> dict[str, int]:
+        """One option per Slot, named after its Character, mapped to the Slot number.
+
+        Two Slots can hold the same Character, so a name that is not unique gets its Slot.
+        """
+        counts = Counter(self.characters.values())
+        options: dict[str, int] = {}
+        for slot, name in sorted(self.characters.items()):
+            if not name:
+                options[f"Slot {slot}"] = slot
+            elif counts[name] > 1:
+                options[f"{name} (Slot {slot})"] = slot
+            else:
+                options[name] = slot
+        return options
+
+    @property
+    def character_option(self) -> str | None:
+        """The option of the active Slot."""
+        return next(
+            (option for option, slot in self.character_options.items() if slot == self.slot),
+            None,
+        )
 
 
 def _write_error(err: CodieError) -> HomeAssistantError:
@@ -263,12 +298,13 @@ class CodieSettingsCoordinator(DataUpdateCoordinator[CodieSettings]):
                 unavailable.add(group)
                 return None
 
-        async def read_voice_volume() -> int | None:
-            # Voice volume belongs to the Slot, so the Slot is read first.
-            return await client.async_get_voice_volume(await client.async_get_slot())
-
         try:
-            voice_volume = await read(SettingGroup.VOICE, read_voice_volume)
+            slot = await read(SettingGroup.CHARACTER, client.async_get_slot)
+            characters = (
+                None
+                if slot is None
+                else await read(SettingGroup.CHARACTER, client.async_get_characters)
+            )
             playback = await read(SettingGroup.MUSIC, client.async_get_music_playback)
             music_read_at = dt_util.utcnow()
             music_mode = await read(SettingGroup.MUSIC_MODE, client.async_get_music_mode)
@@ -279,15 +315,24 @@ class CodieSettingsCoordinator(DataUpdateCoordinator[CodieSettings]):
             raise ConfigEntryAuthFailed(f"The Codie rejected our credentials: {err}") from err
         except CodieError as err:
             raise UpdateFailed(f"Cannot read the Codie's settings: {err}") from err
+        # Voice volume belongs to the active Slot, and comes with the Character list.
+        active = characters.get(slot) if characters and slot is not None else None
+        if active is None:
+            unavailable.add(SettingGroup.VOICE)
         if unavailable == set(SettingGroup):
             raise UpdateFailed("The Codie answered every settings request with an error")
 
+        if not characters:
+            # Without the Characters there is nothing to name or to switch to.
+            unavailable.add(SettingGroup.CHARACTER)
         if playback and playback.volume is None:
             unavailable.add(SettingGroup.MUSIC)
         if brightness and (brightness.level is None or not brightness.writable):
             unavailable.add(SettingGroup.BRIGHTNESS)
         return CodieSettings(
-            voice_volume=voice_volume,
+            slot=slot,
+            characters={number: c.name for number, c in (characters or {}).items()},
+            voice_volume=active.voice_volume if active else None,
             music_volume=playback.volume if playback else None,
             brightness=brightness.level if brightness else None,
             screen_on=screen_on,

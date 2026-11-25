@@ -1,0 +1,182 @@
+blueprint:
+  name: Codie morning briefing
+  description: >-
+    Each morning the Character gives today's weather and, if you pick calendars, today's
+    events, in a Queued announcement: once it is idle, and remembered as something it said.
+    It briefs at the chosen time or, if you pick presence sensors, the first time one of them
+    detects someone between the chosen time and the latest time. The briefing is kept within
+    the 200 characters a Queued announcement allows by naming fewer events.
+  domain: automation
+  author: jaycdev
+  source_url: https://github.com/jaycdev/codie-homeassistant/blob/main/blueprints/automation/codie/morning_briefing.yaml
+  homeassistant:
+    min_version: "2026.11.2"
+  input:
+    codie:
+      name: Codie
+      description: The Codie, or Codies, whose Character gives the briefing.
+      selector:
+        target:
+          device:
+            integration: codie
+          entity:
+            integration: codie
+            domain: notify
+    weather:
+      name: Weather
+      description: Where today's forecast comes from.
+      selector:
+        entity:
+          domain: weather
+    calendars:
+      name: Calendars
+      description: The calendars whose events for the rest of today are read out. Optional.
+      default: []
+      selector:
+        entity:
+          domain: calendar
+          multiple: true
+    greeting:
+      name: Greeting
+      description: >-
+        What the Character says first, word for word. It counts toward the 200 characters a
+        Queued announcement allows, so keep it short.
+      default: Good morning.
+      selector:
+        text:
+    briefing_time:
+      name: Time
+      description: >-
+        When the briefing is given. With presence sensors, the earliest time it may be given.
+      default: "07:00:00"
+      selector:
+        time:
+    presence_sensors:
+      name: Presence sensors
+      description: >-
+        Optional. When set, the briefing waits for the first of these to detect someone,
+        instead of being given at the chosen time.
+      default: []
+      selector:
+        entity:
+          domain: binary_sensor
+          device_class:
+            - motion
+            - occupancy
+            - presence
+          multiple: true
+    latest_time:
+      name: Latest time
+      description: With presence sensors, nobody detected by this time means no briefing that day.
+      default: "12:00:00"
+      selector:
+        time:
+
+mode: single
+
+variables:
+  weather_entity: !input weather
+  calendars: !input calendars
+  greeting: !input greeting
+  presence_sensors: !input presence_sensors
+  # Declared here so the response from inside the `if` below is still set after it.
+  calendar_response: {}
+
+triggers:
+  - trigger: time
+    at: !input briefing_time
+    id: at_time
+  - trigger: state
+    entity_id: !input presence_sensors
+    to: "on"
+    id: presence
+
+conditions:
+  - condition: or
+    conditions:
+      - condition: and
+        conditions:
+          - condition: trigger
+            id: at_time
+          - "{{ presence_sensors | count == 0 }}"
+      - condition: and
+        conditions:
+          - condition: trigger
+            id: presence
+          - condition: time
+            after: !input briefing_time
+            before: !input latest_time
+  # Once a day: the first presence of the morning briefs, later ones don't.
+  - "{{ this.attributes.last_triggered is none or this.attributes.last_triggered < today_at() }}"
+
+actions:
+  - action: weather.get_forecasts
+    target:
+      entity_id: !input weather
+    data:
+      type: daily
+    response_variable: weather_response
+  - if: "{{ calendars | count > 0 }}"
+    then:
+      - action: calendar.get_events
+        target:
+          entity_id: !input calendars
+        data:
+          start_date_time: "{{ now().isoformat() }}"
+          end_date_time: "{{ (today_at() + timedelta(days=1)).isoformat() }}"
+        response_variable: calendar_response
+  - variables:
+      message: >-
+        {%- set words = {
+          'clear-night': 'clear', 'cloudy': 'cloudy', 'exceptional': 'unusual',
+          'fog': 'foggy', 'hail': 'hailing', 'lightning': 'stormy',
+          'lightning-rainy': 'stormy with rain', 'partlycloudy': 'partly cloudy',
+          'pouring': 'pouring', 'rainy': 'rainy', 'snowy': 'snowy', 'snowy-rainy': 'sleety',
+          'sunny': 'sunny', 'windy': 'windy', 'windy-variant': 'windy and cloudy'} -%}
+        {%- set day = weather_response[weather_entity].forecast[0] -%}
+        {%- set low = ' and a low of ' ~ (day.templow | round | int)
+              if day.templow is defined and day.templow is not none else '' -%}
+        {%- set opening = greeting ~ ' Today will be ' ~ words.get(day.condition, day.condition)
+              ~ ', with a high of ' ~ (day.temperature | round | int) ~ low ~ ' degrees.' -%}
+        {%- if calendars | count == 0 -%}
+          {{ opening }}
+        {%- else -%}
+          {%- set events = calendar_response.values() | map(attribute='events')
+                | sum(start=[]) -%}
+          {%- set ns = namespace(by_start=[], fitting='') -%}
+          {%- for event in events -%}
+            {#- All-day events first, then by start time whatever each calendar's offset. -#}
+            {%- set all_day = event.start | length == 10 -%}
+            {%- set at = ', all day' if all_day
+                  else ' at ' ~ (as_datetime(event.start) | as_local).strftime('%H:%M') -%}
+            {#- A long event name would leave no room to name any other. -#}
+            {%- set ns.by_start = ns.by_start
+                  + [[0 if all_day else as_timestamp(event.start), event.summary[:60] ~ at]] -%}
+          {%- endfor -%}
+          {%- set named = ns.by_start | sort(attribute='0') | map(attribute='1') | list -%}
+          {%- set count = events | count -%}
+          {%- if count == 0 -%}
+            {%- set sentences = ['Nothing is on your calendar today.'] -%}
+          {%- elif count == 1 -%}
+            {%- set sentences = ['You have 1 event today: ' ~ named[0] ~ '.',
+                                 'You have 1 event today.'] -%}
+          {%- else -%}
+            {%- set listed = named[:-1] | join(', ') ~ ', and ' ~ named[-1] -%}
+            {%- set sentences = [
+                  'You have ' ~ count ~ ' events today: ' ~ listed ~ '.',
+                  'You have ' ~ count ~ ' events today, starting with ' ~ named[0] ~ '.',
+                  'You have ' ~ count ~ ' events today.'] -%}
+          {%- endif -%}
+          {#- The longest sentence that keeps the briefing within 200 characters. -#}
+          {%- set ns.fitting = '' -%}
+          {%- for sentence in sentences
+                if not ns.fitting and (opening ~ ' ' ~ sentence) | length <= 200 -%}
+            {%- set ns.fitting = ' ' ~ sentence -%}
+          {%- endfor -%}
+          {{ opening ~ ns.fitting }}
+        {%- endif -%}
+  - action: codie.announce
+    target: !input codie
+    data:
+      message: "{{ message }}"
+      queue: true

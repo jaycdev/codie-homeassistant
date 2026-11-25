@@ -21,6 +21,12 @@ class CodieSettingDescription[V](EntityDescription):
     # The group the setting is read with; the entity is unavailable while that group is.
     group: SettingGroup
     value: Callable[[CodieSettings], V | None]
+
+
+@dataclass(frozen=True, kw_only=True)
+class CodieWritableSettingDescription[V](CodieSettingDescription[V]):
+    """A setting the entity can also change, by writing a `V`."""
+
     write: Callable[[CodieClient, V], Awaitable[None]]
 
 
@@ -57,6 +63,12 @@ class CodieSettingEntity[V](CoordinatorEntity[CodieSettingsCoordinator]):
         """The value the Codie reported on the last poll; None while it is unknown."""
         settings = self.coordinator.data
         return None if settings is None else self.entity_description.value(settings)
+
+
+class CodieWritableSettingEntity[V](CodieSettingEntity[V]):
+    """An entity showing one setting of the Codie, which it can also change."""
+
+    entity_description: CodieWritableSettingDescription[V]
 
     async def async_write_setting(self, value: V) -> None:
         """Write `value` and read it back."""

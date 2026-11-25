@@ -132,6 +132,10 @@ class FakeCodie:
     # user switching Characters between our read and our POST would.
     slot: int = 3
     switch_slot_to: int | None = None
+    # The name of the Character in each Slot, as the Character list reports it.
+    character_names: dict[int, str] = field(
+        default_factory=lambda: {1: "Aiko", 2: "Bram", 3: "Cleo", 4: "Dax", 5: "Esme"}
+    )
     # Refuse utterances with (status, code), as when the Codie is asleep or locked.
     utterance_error: tuple[int, str] | None = None
     utterances: list[dict[str, Any]] = field(default_factory=list)
@@ -221,7 +225,8 @@ class FakeCodie:
         app.router.add_delete(tool_path, self._tool_delete)
         app.router.add_get(f"{WS_PREFIX}tool-integrations/{{integration_id}}/executor", self._ws)
         app.router.add_get(f"{API}/data/user/slot", self._slot)
-        app.router.add_get(f"{API}/data/user/character", self._character_get)
+        app.router.add_put(f"{API}/data/user/slot", self._slot_put)
+        app.router.add_get(f"{API}/data/user/character/list", self._character_list)
         app.router.add_put(f"{API}/data/user/character", self._character_put)
         app.router.add_get(f"{API}/data/user/music/playback", self._playback)
         app.router.add_post(f"{API}/data/user/music/control", self._music_control)
@@ -576,13 +581,24 @@ class FakeCodie:
             }
         )
 
-    async def _character_get(self, request: web.Request) -> web.Response:
-        # Without `slot` the real Codie answers for Slot 1, not for the active one.
-        slot = int(request.query.get("slot", 1))
+    async def _slot_put(self, request: web.Request) -> web.Response:
+        body = await request.json()
+        if self.setting_write_error is not None:
+            return _error(*self.setting_write_error)
+        slot = body.get("slot_number")
+        if set(body) != {"slot_number"} or not isinstance(slot, int) or not 1 <= slot <= 5:
+            return _error(400, "INVALID_REQUEST")
+        self.slot = slot
+        return web.json_response({"success": True, "message": "ok"})
+
+    async def _character_list(self, request: web.Request) -> web.Response:
         return web.json_response(
             {
                 "success": True,
-                "data": {"slot_number": slot, "tts_volume": self.voice_volumes[slot]},
+                "data": [
+                    {"slot_number": slot, "name": name, "tts_volume": self.voice_volumes[slot]}
+                    for slot, name in sorted(self.character_names.items())
+                ],
             }
         )
 
