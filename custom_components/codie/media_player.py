@@ -118,7 +118,7 @@ class CodieMusicPlayer(CodieSettingEntity[int], MediaPlayerEntity):
             self._position_of = position_of
             self._attr_media_position = position
             self._attr_media_position_updated_at = (
-                None if position is None or settings is None else settings.music_read_at
+                None if position is None or settings is None else settings.music_position_at
             )
 
     @property

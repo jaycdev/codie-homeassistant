@@ -182,6 +182,9 @@ class FakeCodie:
     music_queue: list[int] = field(default_factory=lambda: [0, 1])
     music_entry: int | None = 0
     music_position_ms: int = 30_000
+    # The Codie's own time, as a Unix time in milliseconds, for when the playback snapshot was
+    # taken; 0 leaves it out.
+    music_updated_at_ms: int = 0
     # Whether the music page is open, that is whether the Codie is in Music mode. Every
     # command except SET_VOLUME needs it.
     music_page_open: bool = True
@@ -633,6 +636,8 @@ class FakeCodie:
             data.update({k: v for k, v in track.items() if v})
             if self.music_position_ms:
                 data["position_ms"] = self.music_position_ms
+        if self.music_updated_at_ms:
+            data["updated_at_ms"] = self.music_updated_at_ms
         if command is not None:
             data["request_id"] = command["request_id"]
             data["applied"] = command["applied"]

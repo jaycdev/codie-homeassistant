@@ -164,6 +164,9 @@ class CodieMusicPlayback:
     album: str | None = None
     duration_ms: int | None = None
     position_ms: int | None = None
+    # The Codie's own time for this snapshot, as a Unix time in milliseconds; None if it left
+    # it out.
+    updated_at_ms: int | None = None
 
 
 @dataclass(frozen=True)
@@ -330,6 +333,7 @@ class CodieClient:
             album=_text(data, "album"),
             duration_ms=_number(data, "duration_ms"),
             position_ms=position_ms,
+            updated_at_ms=_number(data, "updated_at_ms") or None,
         )
 
     async def async_music_control(self, action: str, **fields: Any) -> str:

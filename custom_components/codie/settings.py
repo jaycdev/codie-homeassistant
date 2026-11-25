@@ -79,10 +79,9 @@ class CodieSettings:
     screen_on: bool | None = None
     side_lights: bool | None = None
     music_side_lights: bool | None = None
-    # The music player's state, None while it is unknown, and when it was read, which is when
-    # its position was right.
+    # The music player's state, None while it is unknown, and when its position was right.
     music_playback: CodieMusicPlayback | None = None
-    music_read_at: datetime | None = None
+    music_position_at: datetime | None = None
     music_mode: bool | None = None
     # The groups that cannot be shown: their read failed, or the Codie says they cannot be used
     # (the music player is not ready, or the brightness cannot be set).
@@ -98,12 +97,38 @@ def _write_error(err: CodieError) -> HomeAssistantError:
     if isinstance(err, CodieNotConfirmedError | CodieMusicCommandNotConfirmedError):
         return failed("setting_not_confirmed", error=str(err))
     if isinstance(err, CodieMusicCommandError):
+        if err.reason == "MODE_INACTIVE":
+            # The Codie can also refuse a queued command outside Music mode once it gets to it.
+            return failed("music_mode_inactive")
         if err.action == "SET_VOLUME":
             return failed("setting_music_volume_failed", error=err.reason)
         return failed("music_command_failed", error=err.reason)
     if isinstance(err, CodieApiError) and err.code == "MODE_INACTIVE":
         return failed("music_mode_inactive")
     return failed("setting_failed", error=str(err))
+
+
+def _music_position_at(playback: CodieMusicPlayback, read_at: datetime) -> datetime:
+    """When the position in `playback`, read at `read_at`, was right.
+
+    That is the Codie's own time for the snapshot when it is believable, and otherwise when it
+    was read. The Codie's clock can differ from ours, so a time after the read, or one that
+    puts a playing track past its end by the read, is not believed.
+    """
+    if playback.updated_at_ms is None:
+        return read_at
+    updated_at = dt_util.utc_from_timestamp(playback.updated_at_ms / 1000)
+    if updated_at > read_at:
+        return read_at
+    if (
+        playback.status == "PLAYING"
+        and playback.duration_ms is not None
+        and playback.position_ms is not None
+        and playback.position_ms + (read_at - updated_at).total_seconds() * 1000
+        > playback.duration_ms
+    ):
+        return read_at
+    return updated_at
 
 
 def _music_step(volume: int) -> int:
@@ -269,7 +294,7 @@ class CodieSettingsCoordinator(DataUpdateCoordinator[CodieSettings]):
             side_lights=lights.side_lights if lights else None,
             music_side_lights=lights.music_side_lights if lights else None,
             music_playback=playback,
-            music_read_at=music_read_at if playback else None,
+            music_position_at=_music_position_at(playback, music_read_at) if playback else None,
             music_mode=music_mode,
             unavailable=frozenset(unavailable),
         )

@@ -352,6 +352,44 @@ async def test_resuming_at_the_same_position_takes_its_time_again(
     assert music(hass).attributes[ATTR_MEDIA_POSITION_UPDATED_AT] == dt_util.utcnow()
 
 
+def codie_time_ms(seconds_ago: float) -> int:
+    """The Codie's time `seconds_ago` before now, as the playback reports it."""
+    return round((dt_util.utcnow().timestamp() - seconds_ago) * 1000)
+
+
+async def test_the_position_time_is_the_codies_own(
+    hass: HomeAssistant, fake_codie: FakeCodie, freezer: FrozenDateTimeFactory
+) -> None:
+    fake_codie.music_status = "PLAYING"
+    fake_codie.music_updated_at_ms = codie_time_ms(5)
+    await setup(hass, fake_codie)
+
+    assert music(hass).attributes[ATTR_MEDIA_POSITION_UPDATED_AT] == dt_util.utc_from_timestamp(
+        fake_codie.music_updated_at_ms / 1000
+    )
+
+
+async def test_a_codie_time_after_the_read_is_not_believed(
+    hass: HomeAssistant, fake_codie: FakeCodie, freezer: FrozenDateTimeFactory
+) -> None:
+    fake_codie.music_status = "PLAYING"
+    fake_codie.music_updated_at_ms = codie_time_ms(-60)
+    await setup(hass, fake_codie)
+
+    assert music(hass).attributes[ATTR_MEDIA_POSITION_UPDATED_AT] == dt_util.utcnow()
+
+
+async def test_a_codie_time_that_puts_the_track_past_its_end_is_not_believed(
+    hass: HomeAssistant, fake_codie: FakeCodie, freezer: FrozenDateTimeFactory
+) -> None:
+    # 30 s into a 200 s track, so 200 s ago would put it past the end.
+    fake_codie.music_status = "PLAYING"
+    fake_codie.music_updated_at_ms = codie_time_ms(200)
+    await setup(hass, fake_codie)
+
+    assert music(hass).attributes[ATTR_MEDIA_POSITION_UPDATED_AT] == dt_util.utcnow()
+
+
 async def test_a_control_outside_music_mode_fails_and_says_why(
     hass: HomeAssistant, fake_codie: FakeCodie
 ) -> None:
@@ -363,6 +401,19 @@ async def test_a_control_outside_music_mode_fails_and_says_why(
 
     assert raised.value.translation_key == "music_mode_inactive"
     assert music(hass).state == "paused"
+
+
+async def test_a_control_the_codie_reports_outside_music_mode_says_why(
+    hass: HomeAssistant, fake_codie: FakeCodie
+) -> None:
+    # The Codie can also report MODE_INACTIVE once it gets to the queued command.
+    await setup(hass, fake_codie)
+    fake_codie.music_error_code = "MODE_INACTIVE"
+
+    with pytest.raises(HomeAssistantError) as raised:
+        await call(hass, "media_play")
+
+    assert raised.value.translation_key == "music_mode_inactive"
 
 
 async def test_setting_the_volume_sets_the_music_volume(
