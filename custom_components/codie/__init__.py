@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import datetime
 from functools import partial
 from typing import Any
 
@@ -16,7 +17,7 @@ from homeassistant.config_entries import (
     ConfigEntryState,
 )
 from homeassistant.const import CONF_HOST, CONF_PORT, EVENT_COMPONENT_LOADED, Platform
-from homeassistant.core import CoreState, Event, HomeAssistant, callback
+from homeassistant.core import CALLBACK_TYPE, CoreState, Event, HomeAssistant, callback
 from homeassistant.exceptions import ConfigEntryAuthFailed, ConfigEntryError, ConfigEntryNotReady
 from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers import device_registry as dr
@@ -24,6 +25,7 @@ from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.debounce import Debouncer
 from homeassistant.helpers.dispatcher import async_dispatcher_connect
+from homeassistant.helpers.event import async_call_later
 from homeassistant.helpers.start import async_at_started
 from homeassistant.helpers.typing import ConfigType
 
@@ -59,6 +61,8 @@ CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
 
 # Components load in bursts at startup; wait for the burst to end before comparing catalogs.
 REFRESH_COOLDOWN_S = 10.0
+# A refresh that failed is tried again after this, in case nothing else changes meanwhile.
+REFRESH_RETRY_S = 300.0
 
 
 @dataclass
@@ -176,8 +180,19 @@ async def async_setup_entry(hass: HomeAssistant, entry: CodieConfigEntry) -> boo
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 
+    cancel_retry: CALLBACK_TYPE | None = None
+
+    @callback
+    def _cancel_retry() -> None:
+        nonlocal cancel_retry
+        if cancel_retry is not None:
+            cancel_retry()
+            cancel_retry = None
+
     async def refresh_catalog() -> None:
         """Re-register after the Assist tools changed, then reconnect to pick it up."""
+        nonlocal cancel_retry
+        _cancel_retry()
         try:
             if await registrar.async_refresh():
                 _LOGGER.info("The available Assist tools changed; reconnecting the executor")
@@ -185,14 +200,24 @@ async def async_setup_entry(hass: HomeAssistant, entry: CodieConfigEntry) -> boo
         except CodieAuthError:
             entry.async_start_reauth(hass)
         except CodieError as err:
-            # The next loaded component tries again.
+            # The next loaded component tries again, or the retry if none loads.
             _LOGGER.warning("Could not refresh the tools on the Codie: %s", err)
+            # Not once unloading has begun, which would leave the timer behind.
+            if entry.state is ConfigEntryState.LOADED:
+                cancel_retry = async_call_later(hass, REFRESH_RETRY_S, _retry_refresh)
 
     # An integration that loads after this entry, or an upgrade, adds or removes Assist tools.
     debouncer = Debouncer(
         hass, _LOGGER, cooldown=REFRESH_COOLDOWN_S, immediate=False, function=refresh_catalog
     )
     entry.async_on_unload(debouncer.async_shutdown)
+    entry.async_on_unload(_cancel_retry)
+
+    @callback
+    def _retry_refresh(_now: datetime) -> None:
+        nonlocal cancel_retry
+        cancel_retry = None
+        debouncer.async_schedule_call()
 
     # A callback, so it runs on the event loop rather than in an executor thread.
     @callback

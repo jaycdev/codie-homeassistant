@@ -84,6 +84,8 @@ class CodieIssues:
             self._hass,
             DOMAIN,
             f"{self._entry.entry_id}_{issue_id}",
+            # Linked, so Home Assistant hides it while the entry is disabled.
+            config_entry_id=self._entry.entry_id,
             is_fixable=False,
             severity=ir.IssueSeverity.WARNING,
             translation_key=translation_key,

@@ -544,6 +544,9 @@ class CatalogRegistrar:
                 # The same Tools, but a Tool may be left out for another reason now.
                 self.catalog = dataclasses.replace(self.catalog, left_out=left_out)
                 self._report_left_out()
+                if self._issues is not None:
+                    # The Codie still holds these, even if it refused a catalog in between.
+                    self._issues.catalog_refused(None)
                 return False
             await self._async_register()
             return True
