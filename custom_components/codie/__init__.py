@@ -57,8 +57,10 @@ class CodieRuntimeData:
     """What a loaded entry keeps in memory."""
 
     client: CodieClient
+    registrar: CatalogRegistrar
     executor: CodieExecutor
     settings: CodieSettingsCoordinator
+    timers: CodieTimers
 
 
 type CodieConfigEntry = ConfigEntry[CodieRuntimeData]
@@ -127,7 +129,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: CodieConfigEntry) -> boo
     # now the entities start unavailable and recover on a later poll. A Codie that rejects
     # our credentials still starts re-authentication.
     await settings.async_refresh()
-    entry.runtime_data = CodieRuntimeData(client=client, executor=executor, settings=settings)
+    entry.runtime_data = CodieRuntimeData(
+        client=client, registrar=registrar, executor=executor, settings=settings, timers=timers
+    )
 
     dr.async_get(hass).async_get_or_create(
         config_entry_id=entry.entry_id,

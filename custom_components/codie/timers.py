@@ -212,6 +212,14 @@ class CodieTimers:
             self._schedule(timer, timedelta(seconds=timer.ends_at - now))
         await self._async_save()
 
+    @property
+    def running(self) -> list[tuple[str, str, datetime]]:
+        """The name, Command and end of each running Timer, soonest first."""
+        return [
+            (timer.name, timer.command, dt_util.utc_from_timestamp(timer.ends_at))
+            for timer in sorted(self._timers.values(), key=lambda timer: timer.ends_at)
+        ]
+
     async def async_start(self, arguments: dict[str, Any]) -> dict[str, Any]:
         """The `timer_start` Tool."""
         command = _text(arguments, "command", MAX_COMMAND_CHARS)
