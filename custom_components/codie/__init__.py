@@ -62,8 +62,10 @@ class CodieRuntimeData:
     """What a loaded entry keeps in memory."""
 
     client: CodieClient
+    registrar: CatalogRegistrar
     executor: CodieExecutor
     settings: CodieSettingsCoordinator
+    timers: CodieTimers
 
 
 type CodieConfigEntry = ConfigEntry[CodieRuntimeData]
@@ -122,9 +124,20 @@ async def async_setup_entry(hass: HomeAssistant, entry: CodieConfigEntry) -> boo
     async def announce(message: str) -> None:
         await async_announce(client, message, partial(entry.async_start_reauth, hass))
 
-    timers = CodieTimers(hass, timers_store(hass, entry.entry_id), language, announce)
+    # The Tools and Timers pass the device's id to Assist, so a request or Command that names no
+    # Area acts on the Codie's.
+    device = dr.async_get(hass).async_get_or_create(
+        config_entry_id=entry.entry_id,
+        identifiers={(DOMAIN, entry.unique_id)},
+        manufacturer="CODE27",
+        model="Codie",
+        name=entry.title,
+    )
+    timers = CodieTimers(hass, timers_store(hass, entry.entry_id), language, device.id, announce)
     await timers.async_load()
-    recorder = ToolRecorder(hass, entry, partial(async_call_tool, hass, language, timers))
+    recorder = ToolRecorder(
+        hass, entry, partial(async_call_tool, hass, language, device.id, timers)
+    )
     executor = CodieExecutor(
         client,
         integration_id,
@@ -137,15 +150,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: CodieConfigEntry) -> boo
     # now the entities start unavailable and recover on a later poll. A Codie that rejects
     # our credentials still starts re-authentication.
     await settings.async_refresh()
-    entry.runtime_data = CodieRuntimeData(client=client, executor=executor, settings=settings)
-
-    dr.async_get(hass).async_get_or_create(
-        config_entry_id=entry.entry_id,
-        identifiers={(DOMAIN, entry.unique_id)},
-        manufacturer="CODE27",
-        model="Codie",
-        name=entry.title,
+    entry.runtime_data = CodieRuntimeData(
+        client=client, registrar=registrar, executor=executor, settings=settings, timers=timers
     )
+
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 
     cancel_retry: CALLBACK_TYPE | None = None

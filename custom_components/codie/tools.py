@@ -68,6 +68,23 @@ REGISTER_ATTEMPTS = 3
 ASSIST_LIVE_CONTEXT = "GetLiveContext"
 ASSIST_TODO_GET_ITEMS = "todo_get_items"
 
+# The intents that act on every match, with the domain they act on when a call names none.
+_IN_AREA_INTENTS: dict[str, str | None] = {
+    "HassTurnOn": None,
+    "HassTurnOff": None,
+    "HassSetPosition": None,
+    "HassLightSet": "light",
+    "HassFanSetSpeed": "fan",
+    "HassSetVolume": "media_player",
+}
+# The domains Home Assistant's own voice satellites limit to their area when no target is named.
+# Others, such as locks and switches, are never narrowed: "unlock" must not quietly mean less.
+_AREA_DOMAINS = frozenset({"light", "fan", "cover", "media_player"})
+AREA_HINT = (
+    "Leave name, area and floor out to act on the Codie's own area, for lights, fans, covers "
+    "and media players. Use name 'all' for the whole home."
+)
+
 # Every Tool returns this one small shape. Assist's own results are reduced to it.
 _ASSIST_RESULT_SCHEMA: dict[str, Any] = {
     "type": "object",
@@ -254,17 +271,18 @@ _FALLBACK_CLASSES: dict[str, tuple[tuple[str, str, tuple[Any, ...]], ...]] = {
 }
 
 
-def _llm_context(language: str | None = None) -> llm.LLMContext:
+def _llm_context(language: str | None = None, device_id: str | None = None) -> llm.LLMContext:
     """The context for every call: the Assist API only ever sees what Assist exposes.
 
     `language` is the Codie's AI language, the one the Character speaks and understands.
+    `device_id` is the Codie's own device, whose Area Assist uses for a request that names none.
     """
     return llm.LLMContext(
         platform="codie",
         context=None,
         language=language,
         assistant="conversation",
-        device_id=None,
+        device_id=device_id,
     )
 
 
@@ -339,57 +357,74 @@ async def _assist_definition(
     tool: CodieTool,
     api_tools: list[llm.Tool],
     serializer: Callable[[Any], Any],
-) -> tuple[str, dict[str, Any]] | LeftOut | None:
+) -> tuple[str, dict[str, Any]]:
     """The description and parameters of a Tool backed by Assist.
 
-    Otherwise why it is left out, or None when that is expected and not worth reporting.
+    Raises `ToolLeftOut` if the Tool cannot be offered.
     """
     actions = await _offered_actions(hass, tool, api_tools)
     assist_name = next(iter(actions.values())) if actions else tool.assist_name
     if (assist_tool := await _assist_tool(hass, assist_name, api_tools)) is None:
         _LOGGER.debug("Assist tool %s is not available; skipping %s", assist_name, tool.name)
-        if tool.integration is None or {tool.integration, "intent"} <= hass.config.components:
-            return LeftOut(ISSUE_TOOL_MISSING, {"assist_tool": assist_name})
-        return None
+        reported = tool.integration is None or {tool.integration, "intent"} <= (
+            hass.config.components
+        )
+        raise ToolLeftOut(
+            f"Assist tool {assist_name} is not available",
+            LeftOut(ISSUE_TOOL_MISSING, {"assist_tool": assist_name}) if reported else None,
+        )
     description, parameters = assist_tool.description or "", assist_tool.parameters
     try:
         schema = from_probatio(parameters, serializer)
         for name in tool.hidden:
             schema["properties"].pop(name, None)
+        if assist_name in _IN_AREA_INTENTS and "area" in schema["properties"]:
+            schema["properties"]["area"]["description"] = AREA_HINT
         if tool.actions:
             schema["properties"]["action"] = {"type": "string", "enum": list(actions)}
             schema.setdefault("required", []).append("action")
     except SchemaLimitError as err:
         _LOGGER.warning("Skipping tool %s: %s", tool.name, err)
-        return LeftOut(ISSUE_TOOL_SCHEMA_LIMIT, {"reason": str(err)})
+        raise ToolLeftOut(str(err), LeftOut(ISSUE_TOOL_SCHEMA_LIMIT, {"reason": str(err)})) from err
     if tool.scripts_intro and (scripts := _script_names(hass)):
         description = _list_names(tool.scripts_intro, scripts)
     return description, schema
 
 
-async def build_catalog(
-    hass: HomeAssistant, expected_revision: int, language: str | None
-) -> tuple[dict[str, Any], dict[str, LeftOut]]:
-    """The body for `PUT /data/user/tool-integrations/{id}`, and the Tools to report left out.
+class ToolLeftOut(Exception):
+    """A Tool cannot be offered; the message says why.
+
+    `issue` is the repair issue to raise for it, or None when leaving it out is expected:
+    no vacuum, so no vacuum_start.
+    """
+
+    def __init__(self, message: str, issue: LeftOut | None = None) -> None:
+        super().__init__(message)
+        self.issue = issue
+
+
+async def _build_tools(
+    hass: HomeAssistant, language: str | None
+) -> tuple[list[dict[str, Any]], dict[str, ToolLeftOut]]:
+    """The Tool definitions, and the Tools left out, each with the reason.
 
     `language` is the Codie's AI language, which decides whether the Timer Tools are offered.
     """
     api_tools, serializer = await _assist_api_tools(hass)
     tools: list[dict[str, Any]] = []
-    left_out: dict[str, LeftOut] = {}
+    left_out: dict[str, ToolLeftOut] = {}
     for tool in TOOLS:
-        if tool.parameters is not None:
-            if not timers_supported(hass, language):
+        try:
+            if tool.parameters is None:
+                description, schema = await _assist_definition(hass, tool, api_tools, serializer)
+            elif timers_supported(hass, language):
+                description, schema = "", copy.deepcopy(dict(tool.parameters))
+            else:
                 _LOGGER.debug("Timers are unavailable; skipping %s", tool.name)
-                continue
-            description, schema = "", copy.deepcopy(dict(tool.parameters))
-        elif (found := await _assist_definition(hass, tool, api_tools, serializer)) is None:
+                raise ToolLeftOut(tool.unavailable or "Timers are unavailable")
+        except ToolLeftOut as err:
+            left_out[tool.name] = err
             continue
-        elif isinstance(found, LeftOut):
-            left_out[tool.name] = found
-            continue
-        else:
-            description, schema = found
         definition = {
             "name": tool.name,
             "description": (tool.description or description)[:MAX_DESCRIPTION_CHARS],
@@ -401,21 +436,37 @@ async def build_catalog(
             "timeout_ms": DEFAULT_TIMEOUT_MS,
         }
         tools.append({**definition, "version": _version(definition)})
-    catalog = {
+    return tools, left_out
+
+
+def _catalog(tools: list[dict[str, Any]], expected_revision: int) -> dict[str, Any]:
+    """The body for `PUT /data/user/tool-integrations/{id}`."""
+    return {
         "protocol_version": "v1",
         "expected_revision": expected_revision,
         "name": "Home Assistant",
         "enabled": True,
         "tools": tools,
     }
-    return catalog, left_out
+
+
+@dataclass(frozen=True)
+class RegisteredCatalog:
+    """The catalog the Codie last accepted."""
+
+    tools: list[dict[str, Any]]
+    # The Tools that were left out, each with the reason.
+    left_out: dict[str, str]
+    # The revision the Codie gave it; None if its reply did not say.
+    revision: int | None
 
 
 class CatalogRegistrar:
     """Keeps the Codie's catalog in step with the Assist tools Home Assistant has.
 
-    It raises a repair issue for each Tool it leaves out, and one while the Codie refuses the
-    catalog, and clears them once that is no longer so.
+    It raises a repair issue for each Tool it leaves out that the user could do something
+    about, and one while the Codie refuses the catalog, and clears them once that is no
+    longer so.
     """
 
     def __init__(
@@ -430,7 +481,7 @@ class CatalogRegistrar:
         self._entry = entry
         self._integration_id: str = entry.data[CONF_INTEGRATION_ID]
         self._language = language
-        self._tools: list[dict[str, Any]] = []
+        self.catalog: RegisteredCatalog | None = None
         self._lock = asyncio.Lock()
 
     async def async_register(self) -> None:
@@ -441,18 +492,24 @@ class CatalogRegistrar:
     async def async_refresh(self) -> bool:
         """Register again if the available Tools changed. Returns whether it did."""
         async with self._lock:
-            catalog, left_out = await build_catalog(self._hass, 0, self._language)
+            tools, left_out = await _build_tools(self._hass, self._language)
             # A Tool's integration can load with its Assist tool still missing.
-            async_set_tools_left_out(self._hass, self._entry, left_out)
-            if catalog["tools"] == self._tools:
+            self._report_left_out(left_out)
+            if self.catalog is not None and tools == self.catalog.tools:
+                # The same Tools, but a Tool may be left out for another reason now.
+                self.catalog = dataclasses.replace(self.catalog, left_out=_reasons(left_out))
                 # The Codie still holds these, even if it refused a catalog in between.
                 async_set_catalog_rejected(self._hass, self._entry, None)
                 return False
             await self._async_register()
             return True
 
+    def _report_left_out(self, left_out: dict[str, ToolLeftOut]) -> None:
+        issues = {name: err.issue for name, err in left_out.items() if err.issue is not None}
+        async_set_tools_left_out(self._hass, self._entry, issues)
+
     async def _async_register(self) -> None:
-        """Create or update the catalog and remember the Tools it now holds.
+        """Create or update the catalog and remember what the Codie now holds.
 
         On a revision conflict the current revision is read again and the PUT retried.
         """
@@ -461,10 +518,12 @@ class CatalogRegistrar:
             attempt += 1
             current = await self._client.async_get_tool_integration(self._integration_id)
             revision = int(current["revision"]) if current else 0
-            catalog, left_out = await build_catalog(self._hass, revision, self._language)
-            async_set_tools_left_out(self._hass, self._entry, left_out)
+            tools, left_out = await _build_tools(self._hass, self._language)
+            self._report_left_out(left_out)
             try:
-                await self._client.async_put_tool_integration(self._integration_id, catalog)
+                reply = await self._client.async_put_tool_integration(
+                    self._integration_id, _catalog(tools, revision)
+                )
             except CodieApiError as err:
                 if err.status == HTTPStatus.CONFLICT and attempt < REGISTER_ATTEMPTS:
                     _LOGGER.debug("Catalog revision conflict, re-reading (attempt %s)", attempt)
@@ -478,8 +537,17 @@ class CatalogRegistrar:
                     async_set_catalog_rejected(self._hass, self._entry, str(err))
                 raise
             async_set_catalog_rejected(self._hass, self._entry, None)
-            self._tools = catalog["tools"]
+            new_revision = reply.get("revision")
+            valid = isinstance(new_revision, int) and not isinstance(new_revision, bool)
+            self.catalog = RegisteredCatalog(
+                tools, _reasons(left_out), new_revision if valid else None
+            )
             return
+
+
+def _reasons(left_out: dict[str, ToolLeftOut]) -> dict[str, str]:
+    """Each left-out Tool with why, as the diagnostics show it."""
+    return {name: str(err) for name, err in left_out.items()}
 
 
 def find_tool(name: str) -> CodieTool | None:
@@ -490,14 +558,18 @@ def find_tool(name: str) -> CodieTool | None:
 async def async_call_tool(
     hass: HomeAssistant,
     language: str | None,
+    device_id: str | None,
     timers: CodieTimers,
     name: str,
     arguments: dict[str, Any],
     affected: list[str] | None = None,
+    added: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Run a Tool and return the result data; Timer Tools go to `timers`, the rest to Assist.
 
-    The ids of the entities the call acted on are added to `affected`, for the record of the call.
+    `device_id` is the Codie's device, so a request that names no area can act on the Codie's.
+    The ids of the entities the call acted on are added to `affected`, and the arguments the
+    integration added, such as that area, to `added`, for the record of the call.
     """
     tool = find_tool(name)
     if tool is None:
@@ -508,7 +580,7 @@ async def async_call_tool(
         if name == "timer_start":
             return await timers.async_start(arguments)
         return await timers.async_control(arguments)
-    context = _llm_context(language)
+    context = _llm_context(language, device_id)
     arguments = dict(arguments)
     assist_name = tool.assist_name_for(arguments)
     if assist_name is None:
@@ -517,6 +589,7 @@ async def async_call_tool(
             f"action must be one of {', '.join(tool.actions)}",
         )
     arguments.pop("action", None)
+    area: ar.AreaEntry | None = None
     try:
         api_tools, _ = await _assist_api_tools(hass, language)
         assist_tool = await _assist_tool(hass, assist_name, api_tools)
@@ -528,8 +601,13 @@ async def async_call_tool(
                 tool.unavailable
                 or f"{assist_name} is not available; no exposed entity supports it",
             )
+        arguments = _visible(tool, arguments)
+        if (area := _codies_area(hass, device_id, assist_name, arguments)) is not None:
+            arguments["area"] = area.id
+            if added is not None:
+                added["area"] = area.id
         raw = await assist_tool.async_call(
-            hass, llm.ToolInput(assist_tool.name, _visible(tool, arguments)), context
+            hass, llm.ToolInput(assist_tool.name, arguments), context
         )
     except intent.MatchFailedError as err:
         reason = err.result.no_match_reason
@@ -539,6 +617,13 @@ async def async_call_tool(
             raise ToolNeedsClarification(
                 ERROR_AMBIGUOUS_TARGET,
                 f"More than one exposed entity matches {err.result.no_match_name or 'that'}",
+            ) from err
+        if area is not None:
+            raise ToolError(
+                ERROR_TARGET_NOT_FOUND,
+                f"Nothing exposed in the Codie's area {area.name} matches that request: one that "
+                "names no area is limited to the Codie's. To act elsewhere, name an area or "
+                "floor, or use the name 'all' for the whole home.",
             ) from err
         raise ToolError(
             ERROR_TARGET_NOT_FOUND,
@@ -636,6 +721,31 @@ def _list_names(intro: str, names: list[str]) -> str:
         if len(text) <= MAX_DESCRIPTION_CHARS:
             return text
     return intro + "..."
+
+
+def _codies_area(
+    hass: HomeAssistant, device_id: str | None, assist_name: str, arguments: dict[str, Any]
+) -> ar.AreaEntry | None:
+    """The Codie's area, if a call with `arguments` is to be limited to it.
+
+    Assist tells its own model that "turn on the lights" means the lights in the room it is
+    in; the Character's model never hears that, so the area is added here. Only for intents
+    that act on every match, when the call names no entity, area or floor, and only for the
+    domains Home Assistant's own voice satellites limit the same way. The other intents pick
+    one target, using the area from the context to choose between several, or act on whatever
+    is playing, wherever it is.
+    """
+    if assist_name not in _IN_AREA_INTENTS:
+        return None
+    if any(arguments.get(key) for key in ("name", "area", "floor")):
+        return None
+    domain = arguments.get("domain") or _IN_AREA_INTENTS[assist_name]
+    domains = {domain} if isinstance(domain, str) else set(domain or ())
+    if not domains or not domains <= _AREA_DOMAINS:
+        return None
+    device = dr.async_get(hass).async_get(device_id) if device_id else None
+    area_id = dr.async_get_effective_area_id(hass, device) if device else None
+    return ar.async_get(hass).async_get_area(area_id) if area_id else None
 
 
 def _visible(tool: CodieTool, arguments: dict[str, Any]) -> dict[str, Any]:

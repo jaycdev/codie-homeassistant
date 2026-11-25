@@ -122,6 +122,8 @@ class FakeCodie:
     invocation_ids: list[str] = field(default_factory=list)
     # Turn executor handshakes away, as when the Codie is restarting.
     refuse_executor: bool = False
+    # Leave the executor's heartbeat pings unanswered, as a Codie that went off the network.
+    answer_pings: bool = True
     # Answer every signed request with this 401 code, whatever its signature.
     auth_error: str | None = None
     # What the `Date` header of every reply says: the clock plus `date_skew` seconds, so a test
@@ -548,7 +550,7 @@ class FakeCodie:
             return _error(404, "NOT_FOUND")
         if self.refuse_executor:
             return _error(503, "UNAVAILABLE")
-        ws = web.WebSocketResponse()
+        ws = web.WebSocketResponse(autoping=self.answer_pings)
         await ws.prepare(request)
         self._executor = ws
         self.executor_connects += 1

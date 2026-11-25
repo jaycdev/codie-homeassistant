@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Generator
+from collections.abc import AsyncGenerator, Generator
 from datetime import timedelta
 from typing import Any
 from unittest.mock import AsyncMock, patch
@@ -15,6 +15,8 @@ from homeassistant.components.conversation.default_agent import DefaultAgent
 from homeassistant.components.homeassistant.exposed_entities import async_expose_entity
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
+from homeassistant.helpers import area_registry as ar
+from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import intent
 from homeassistant.setup import async_setup_component
 from homeassistant.util import dt as dt_util
@@ -22,10 +24,15 @@ from pytest_homeassistant.common import MockConfigEntry, async_fire_time_changed
 
 from custom_components.codie.const import DOMAIN
 from custom_components.codie.errors import ToolError
-from custom_components.codie.timers import CodieTimers, timers_store
+from custom_components.codie.timers import (
+    FAILURE_MESSAGES,
+    CodieTimers,
+    failure_message,
+    timers_store,
+)
 
 from .fake_codie import FakeCodie
-from .test_tool_list import add_entity, setup_assist
+from .test_tool_list import add_entity, put_in_area, setup_assist
 from .test_tools import INTEGRATION_ID, make_entry, setup, wait_connected
 
 
@@ -103,6 +110,28 @@ async def test_a_timer_runs_its_command_when_it_ends(hass: HomeAssistant, codie:
     assert not codie.utterances
 
 
+async def test_a_command_that_names_no_area_acts_on_the_codies_area(
+    hass: HomeAssistant, codie: FakeCodie
+) -> None:
+    # "Turn off the lights in 20 minutes", said to a Codie in the Office.
+    await setup_assist(hass)
+    put_in_area(hass, add_entity(hass, "light", "desk lamp", True), "Office")
+    put_in_area(hass, add_entity(hass, "light", "pendant", True), "Kitchen")
+    entry = await setup(hass, codie)
+    await wait_connected(hass, codie, True)
+    devices = dr.async_get(hass)
+    (device,) = dr.async_entries_for_config_entry(devices, entry.entry_id)
+    office = ar.async_get(hass).async_get_or_create("Office")
+    devices.async_update_device(device.id, area_id=office.id)
+    turned_off = async_mock_service(hass, "light", "turn_off")
+
+    result = await call(codie, "timer_start", command="turn off the lights", minutes=20)
+    await elapse(hass, minutes=21)
+
+    assert result["status"] == "succeeded"
+    assert sorted(e for c in turned_off for e in c.data["entity_id"]) == ["light.desk_lamp"]
+
+
 async def test_a_command_that_fails_is_announced(hass: HomeAssistant, codie: FakeCodie) -> None:
     await start_codie(hass, codie)
     await call(codie, "timer_start", command="turn off the kitchen lamp", minutes=20)
@@ -163,9 +192,7 @@ async def test_a_failure_without_speech_is_announced_in_english(
         await elapse(hass, minutes=21)
 
     (utterance,) = codie.utterances
-    assert utterance["text"] == (
-        "I couldn't turn off the kitchen lamp: Home Assistant could not do it"
-    )
+    assert utterance["text"] == "I couldn't turn off the kitchen lamp."
 
 
 async def test_a_command_that_succeeds_is_not_announced(
@@ -182,17 +209,130 @@ async def test_a_command_that_succeeds_is_not_announced(
     assert not codie.utterances
 
 
-async def test_a_command_that_raises_is_announced(hass: HomeAssistant, codie: FakeCodie) -> None:
+async def test_a_command_that_raises_is_announced_and_its_reason_logged(
+    hass: HomeAssistant, codie: FakeCodie, caplog: pytest.LogCaptureFixture
+) -> None:
     await start_codie(hass, codie)
     await call(codie, "timer_start", command="turn off the kitchen lamp", minutes=20)
 
-    with patch(
-        "custom_components.codie.timers.async_converse", side_effect=HomeAssistantError("boom")
+    with (
+        patch(
+            "custom_components.codie.timers.async_converse",
+            side_effect=HomeAssistantError("boom"),
+        ),
+        caplog.at_level(logging.WARNING),
     ):
         await elapse(hass, minutes=21)
 
     (utterance,) = codie.utterances
-    assert utterance["text"] == "I couldn't turn off the kitchen lamp: boom"
+    # The exception text is for the log, not for the Character to say.
+    assert utterance["text"] == "I couldn't turn off the kitchen lamp."
+    assert "boom" in caplog.text
+
+
+JAPANESE_COMMAND = "キッチンのランプを消して"
+
+
+@pytest.fixture
+async def japanese_timer(hass: HomeAssistant) -> AsyncGenerator[AsyncMock]:
+    """Timers of a Codie whose AI language is Japanese, with one Timer set; its announcer.
+
+    The Command check is skipped: the built-in agent's Japanese sentences are not tested. The
+    Timers are always unloaded, so a failed test leaves no callback scheduled.
+    """
+    announce = AsyncMock()
+    timers = CodieTimers(hass, timers_store(hass, "entry"), "ja", announce)
+    try:
+        with patch.object(timers, "_async_check", AsyncMock()):
+            await timers.async_start({"command": JAPANESE_COMMAND, "minutes": 20})
+        yield announce
+    finally:
+        timers.async_unload()
+
+
+@pytest.mark.parametrize(
+    "converse",
+    [
+        {"return_value": agent_answer(failed=(LAMP,))},
+        {"side_effect": HomeAssistantError("Entity light.kitchen_lamp is not exposed")},
+    ],
+    ids=["no speech", "raised"],
+)
+async def test_a_failure_without_speech_is_announced_in_the_ai_language(
+    hass: HomeAssistant,
+    caplog: pytest.LogCaptureFixture,
+    japanese_timer: AsyncMock,
+    converse: dict[str, Any],
+) -> None:
+    announce = japanese_timer
+    with (
+        patch("custom_components.codie.timers.async_converse", **converse),
+        caplog.at_level(logging.WARNING),
+    ):
+        await elapse(hass, minutes=21)
+
+    announce.assert_awaited_once_with("「キッチンのランプを消して」を実行できませんでした。")
+    ((message,), _) = announce.await_args_list[0]
+    assert message != failure_message("en", JAPANESE_COMMAND)
+    assert "not exposed" not in message
+    assert JAPANESE_COMMAND in caplog.text
+
+
+async def test_a_failure_with_speech_is_announced_unchanged_in_any_language(
+    hass: HomeAssistant, japanese_timer: AsyncMock
+) -> None:
+    announce = japanese_timer
+    with patch(
+        "custom_components.codie.timers.async_converse",
+        return_value=agent_answer("キッチンのランプは公開されていません", failed=(LAMP,)),
+    ):
+        await elapse(hass, minutes=21)
+
+    announce.assert_awaited_once_with("キッチンのランプは公開されていません")
+
+
+@pytest.mark.parametrize(
+    ("language", "message"),
+    [
+        ("en", "I couldn't turn off {the} lamp."),
+        ("de", "Ich konnte „turn off {the} lamp“ nicht ausführen."),
+        ("fr-CA", "Je n'ai pas pu exécuter « turn off {the} lamp »."),
+        ("it", "Non ho potuto eseguire «turn off {the} lamp»."),
+        ("zh", "我没能执行“turn off {the} lamp”。"),
+        ("zh-TW", "我沒能執行「turn off {the} lamp」。"),
+        ("zh_Hant_HK", "我沒能執行「turn off {the} lamp」。"),
+        ("xx", "I couldn't turn off {the} lamp."),
+        (None, "I couldn't turn off {the} lamp."),
+    ],
+)
+def test_the_failure_message_follows_the_language_and_keeps_the_command_as_is(
+    language: str | None, message: str
+) -> None:
+    assert failure_message(language, "turn off {the} lamp") == message
+
+
+@pytest.mark.parametrize(
+    ("language", "command", "message"),
+    [
+        ("en", "Turn off the lamp.", "I couldn't turn off the lamp."),
+        ("en", "turn off the lamp! ", "I couldn't turn off the lamp."),
+        ("en", "TV off?", "I couldn't TV off."),
+        ("de", "Schalte die Lampe aus.", "Ich konnte „Schalte die Lampe aus“ nicht ausführen."),
+        ("ja", "ランプを消して。", "「ランプを消して」を実行できませんでした。"),
+        ("zh", "关灯\uff01", "我没能执行“关灯”。"),
+    ],
+)
+def test_the_failure_message_drops_the_commands_own_sentence_end(
+    language: str, command: str, message: str
+) -> None:
+    assert failure_message(language, command) == message
+
+
+def test_every_failure_message_holds_the_command_once() -> None:
+    for language, template in FAILURE_MESSAGES.items():
+        assert template.count("{command}") == 1, language
+        assert template.replace("{command}", "").count("{") == 0, language
+        assert failure_message(language, "X") == template.replace("{command}", "X")
 
 
 async def test_a_failure_is_logged_when_the_codie_cannot_say_it(
@@ -314,7 +454,7 @@ async def test_a_start_that_ends_after_unload_schedules_and_saves_nothing(
     add_entity(hass, "light", "kitchen lamp", True)
     turned_off = async_mock_service(hass, "light", "turn_off")
     store = timers_store(hass, "gone")
-    timers = CodieTimers(hass, store, "en", AsyncMock())
+    timers = CodieTimers(hass, store, "en", None, AsyncMock())
     checking = asyncio.Event()
     release = asyncio.Event()
 

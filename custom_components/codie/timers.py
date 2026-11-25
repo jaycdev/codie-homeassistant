@@ -42,6 +42,27 @@ STORE_VERSION = 1
 MAX_DURATION = timedelta(hours=24)
 TIMERS_UNAVAILABLE = "Timers need Home Assistant's built-in agent to support the Codie's language"
 
+# What the Character says when a Timer's Command fails and the agent gave no speech of its own,
+# by the Codie's AI language. These are the AI languages the Codie offers, keyed in lower case.
+# English is the last resort. Each holds `{command}` once and no other placeholder.
+FAILURE_MESSAGES = {
+    "en": "I couldn't {command}.",
+    "de": "Ich konnte „{command}“ nicht ausführen.",
+    "es": "No pude ejecutar «{command}».",
+    "fr": "Je n'ai pas pu exécuter « {command} ».",
+    "it": "Non ho potuto eseguire «{command}».",
+    "ja": "「{command}」を実行できませんでした。",
+    "ko": '"{command}" 실행에 실패했어요.',
+    "pt": "Não consegui executar “{command}”.",
+    "zh": "我没能执行“{command}”。",
+    "zh-tw": "我沒能執行「{command}」。",
+}
+# Other tags for Chinese in traditional characters.
+_TRADITIONAL_CHINESE = ("zh-hant", "zh-hk", "zh-mo")
+# Ends a sentence. A Command's own is dropped, since the message ends the sentence itself.
+# The fullwidth "!" and "?" are escaped, as they look like the ASCII ones.
+_SENTENCE_END = ".!?。\uff01\uff1f"
+
 
 def timers_store(hass: HomeAssistant, entry_id: str) -> Store[dict[str, Any]]:
     """Where the Timers of one Codie are kept, apart from every other Codie's."""
@@ -105,6 +126,29 @@ def _duration(arguments: dict[str, Any]) -> timedelta:
     return delay
 
 
+def failure_message(language: str | None, command: str) -> str:
+    """What the Character says when `command` failed, in the AI language `language`.
+
+    A language without its own message falls back to its base language, then to English. The
+    Command loses its own sentence-ending punctuation; braces in it are not read as
+    placeholders. In the English message, a capital on a first word such as "Turn" is dropped,
+    as the Command continues the sentence. A word like "TV" keeps its capitals.
+    """
+    tag = (language or "").replace("_", "-").casefold()
+    if tag.startswith(_TRADITIONAL_CHINESE):
+        tag = "zh-tw"
+    if tag not in FAILURE_MESSAGES:
+        tag = tag.split("-", 1)[0]
+    if tag not in FAILURE_MESSAGES:
+        tag = "en"
+    command = command.strip().rstrip(_SENTENCE_END).rstrip() or command
+    if tag == "en" and (words := command.split(maxsplit=1)):
+        first = words[0]
+        if len(first) > 1 and first[0].isupper() and first[1:].islower():
+            command = command[0].lower() + command[1:]
+    return FAILURE_MESSAGES[tag].format(command=command)
+
+
 def _failed(response: IntentResponse) -> bool:
     """Whether the agent answered with an error, or did the Command for only some targets."""
     return response.response_type is IntentResponseType.ERROR or bool(response.failed_results)
@@ -132,11 +176,14 @@ class CodieTimers:
         hass: HomeAssistant,
         store: Store[dict[str, Any]],
         language: str | None,
+        device_id: str | None,
         announce: Callable[[str], Awaitable[None]],
     ) -> None:
         self._hass = hass
         self._store = store
         self._language = language
+        # The Codie's device: a Command that names no Area acts on the Codie's.
+        self._device_id = device_id
         # Has the Character speak a message at once.
         self._announce = announce
         self._timers: dict[str, _Timer] = {}
@@ -167,6 +214,14 @@ class CodieTimers:
                 continue
             self._schedule(timer, timedelta(seconds=timer.ends_at - now))
         await self._async_save()
+
+    @property
+    def running(self) -> list[tuple[str, str, datetime]]:
+        """The name, Command and end of each running Timer, soonest first."""
+        return [
+            (timer.name, timer.command, dt_util.utc_from_timestamp(timer.ends_at))
+            for timer in sorted(self._timers.values(), key=lambda timer: timer.ends_at)
+        ]
 
     async def async_start(self, arguments: dict[str, Any]) -> dict[str, Any]:
         """The `timer_start` Tool."""
@@ -289,6 +344,7 @@ class CodieTimers:
                 context=Context(),
                 language=self._language,
                 agent_id=HOME_ASSISTANT_AGENT,
+                device_id=self._device_id,
             )
         except Exception as err:
             await self._async_report_failure(timer, str(err) or type(err).__name__)
@@ -301,14 +357,19 @@ class CodieTimers:
             )
 
     async def _async_report_failure(self, timer: _Timer, reason: str, speech: str = "") -> None:
-        """Have the Character say that the Command failed, or log it if it cannot."""
-        message = speech or f"I couldn't {timer.command}: {reason}"
+        """Log that the Command failed and have the Character say so in the AI language.
+
+        The agent's own speech is said as it is. Without it, the Character says a set message in
+        its language. The `reason`, often an English exception text, only goes to the log.
+        """
+        _LOGGER.warning(
+            "Timer '%s' could not run its Command '%s': %s", timer.name, timer.command, reason
+        )
+        message = speech or failure_message(self._language, timer.command)
         try:
             await self._announce(message)
         except HomeAssistantError as err:
-            _LOGGER.warning(
-                "Timer '%s' failed (%s) and the Codie could not say so: %s", timer.name, reason, err
-            )
+            _LOGGER.warning("Timer '%s' failed and the Codie could not say so: %s", timer.name, err)
 
     async def _async_check(self, command: str) -> None:
         """Fail unless the built-in agent would run `command` as an intent or sentence trigger."""
@@ -319,7 +380,7 @@ class CodieTimers:
             text=command,
             context=Context(),
             conversation_id=None,
-            device_id=None,
+            device_id=self._device_id,
             satellite_id=None,
             language=self._language or "",
             agent_id=HOME_ASSISTANT_AGENT,
