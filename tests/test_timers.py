@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Generator
+from collections.abc import AsyncGenerator, Generator
 from datetime import timedelta
 from typing import Any
 from unittest.mock import AsyncMock, patch
@@ -206,21 +206,24 @@ async def test_a_command_that_raises_is_announced_and_its_reason_logged(
     assert "boom" in caplog.text
 
 
-async def start_timers_in(
-    hass: HomeAssistant, language: str, command: str
-) -> tuple[CodieTimers, AsyncMock]:
-    """Timers of a Codie whose AI language is `language`, with one Timer of `command` set.
+JAPANESE_COMMAND = "キッチンのランプを消して"
 
-    The Command check is skipped: the built-in agent's sentences in `language` are not tested.
+
+@pytest.fixture
+async def japanese_timer(hass: HomeAssistant) -> AsyncGenerator[AsyncMock]:
+    """Timers of a Codie whose AI language is Japanese, with one Timer set; its announcer.
+
+    The Command check is skipped: the built-in agent's Japanese sentences are not tested. The
+    Timers are always unloaded, so a failed test leaves no callback scheduled.
     """
     announce = AsyncMock()
-    timers = CodieTimers(hass, timers_store(hass, "entry"), language, announce)
-    with patch.object(timers, "_async_check", AsyncMock()):
-        await timers.async_start({"command": command, "minutes": 20})
-    return timers, announce
-
-
-JAPANESE_COMMAND = "キッチンのランプを消して"
+    timers = CodieTimers(hass, timers_store(hass, "entry"), "ja", announce)
+    try:
+        with patch.object(timers, "_async_check", AsyncMock()):
+            await timers.async_start({"command": JAPANESE_COMMAND, "minutes": 20})
+        yield announce
+    finally:
+        timers.async_unload()
 
 
 @pytest.mark.parametrize(
@@ -232,10 +235,12 @@ JAPANESE_COMMAND = "キッチンのランプを消して"
     ids=["no speech", "raised"],
 )
 async def test_a_failure_without_speech_is_announced_in_the_ai_language(
-    hass: HomeAssistant, caplog: pytest.LogCaptureFixture, converse: dict[str, Any]
+    hass: HomeAssistant,
+    caplog: pytest.LogCaptureFixture,
+    japanese_timer: AsyncMock,
+    converse: dict[str, Any],
 ) -> None:
-    timers, announce = await start_timers_in(hass, "ja", JAPANESE_COMMAND)
-
+    announce = japanese_timer
     with (
         patch("custom_components.codie.timers.async_converse", **converse),
         caplog.at_level(logging.WARNING),
@@ -247,14 +252,12 @@ async def test_a_failure_without_speech_is_announced_in_the_ai_language(
     assert message != failure_message("en", JAPANESE_COMMAND)
     assert "not exposed" not in message
     assert JAPANESE_COMMAND in caplog.text
-    timers.async_unload()
 
 
 async def test_a_failure_with_speech_is_announced_unchanged_in_any_language(
-    hass: HomeAssistant,
+    hass: HomeAssistant, japanese_timer: AsyncMock
 ) -> None:
-    timers, announce = await start_timers_in(hass, "ja", JAPANESE_COMMAND)
-
+    announce = japanese_timer
     with patch(
         "custom_components.codie.timers.async_converse",
         return_value=agent_answer("キッチンのランプは公開されていません", failed=(LAMP,)),
@@ -262,7 +265,6 @@ async def test_a_failure_with_speech_is_announced_unchanged_in_any_language(
         await elapse(hass, minutes=21)
 
     announce.assert_awaited_once_with("キッチンのランプは公開されていません")
-    timers.async_unload()
 
 
 @pytest.mark.parametrize(
@@ -271,9 +273,10 @@ async def test_a_failure_with_speech_is_announced_unchanged_in_any_language(
         ("en", "I couldn't turn off {the} lamp."),
         ("de", "Ich konnte „turn off {the} lamp“ nicht ausführen."),
         ("fr-CA", "Je n'ai pas pu exécuter « turn off {the} lamp »."),
-        ("zh", "我无法执行“turn off {the} lamp”。"),
-        ("zh-TW", "我無法執行「turn off {the} lamp」。"),
-        ("zh_Hant_HK", "我無法執行「turn off {the} lamp」。"),
+        ("it", "Non ho potuto eseguire «turn off {the} lamp»."),
+        ("zh", "我没能执行“turn off {the} lamp”。"),
+        ("zh-TW", "我沒能執行「turn off {the} lamp」。"),
+        ("zh_Hant_HK", "我沒能執行「turn off {the} lamp」。"),
         ("xx", "I couldn't turn off {the} lamp."),
         (None, "I couldn't turn off {the} lamp."),
     ],
@@ -282,6 +285,23 @@ def test_the_failure_message_follows_the_language_and_keeps_the_command_as_is(
     language: str | None, message: str
 ) -> None:
     assert failure_message(language, "turn off {the} lamp") == message
+
+
+@pytest.mark.parametrize(
+    ("language", "command", "message"),
+    [
+        ("en", "Turn off the lamp.", "I couldn't turn off the lamp."),
+        ("en", "turn off the lamp! ", "I couldn't turn off the lamp."),
+        ("en", "TV off?", "I couldn't TV off."),
+        ("de", "Schalte die Lampe aus.", "Ich konnte „Schalte die Lampe aus“ nicht ausführen."),
+        ("ja", "ランプを消して。", "「ランプを消して」を実行できませんでした。"),
+        ("zh", "关灯\uff01", "我没能执行“关灯”。"),
+    ],
+)
+def test_the_failure_message_drops_the_commands_own_sentence_end(
+    language: str, command: str, message: str
+) -> None:
+    assert failure_message(language, command) == message
 
 
 def test_every_failure_message_holds_the_command_once() -> None:

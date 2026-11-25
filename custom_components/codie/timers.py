@@ -50,15 +50,18 @@ FAILURE_MESSAGES = {
     "de": "Ich konnte „{command}“ nicht ausführen.",
     "es": "No pude ejecutar «{command}».",
     "fr": "Je n'ai pas pu exécuter « {command} ».",
-    "it": "Non è stato possibile eseguire «{command}».",
+    "it": "Non ho potuto eseguire «{command}».",
     "ja": "「{command}」を実行できませんでした。",
     "ko": '"{command}" 실행에 실패했어요.',
     "pt": "Não consegui executar “{command}”.",
-    "zh": "我无法执行“{command}”。",
-    "zh-tw": "我無法執行「{command}」。",
+    "zh": "我没能执行“{command}”。",
+    "zh-tw": "我沒能執行「{command}」。",
 }
 # Other tags for Chinese in traditional characters.
 _TRADITIONAL_CHINESE = ("zh-hant", "zh-hk", "zh-mo")
+# Ends a sentence. A Command's own is dropped, since the message ends the sentence itself.
+# The fullwidth "!" and "?" are escaped, as they look like the ASCII ones.
+_SENTENCE_END = ".!?。\uff01\uff1f"
 
 
 def timers_store(hass: HomeAssistant, entry_id: str) -> Store[dict[str, Any]]:
@@ -127,17 +130,23 @@ def failure_message(language: str | None, command: str) -> str:
     """What the Character says when `command` failed, in the AI language `language`.
 
     A language without its own message falls back to its base language, then to English. The
-    Command is put in as it is: braces in it are not read as placeholders.
+    Command loses its own sentence-ending punctuation; braces in it are not read as
+    placeholders. In the English message, a capital on a first word such as "Turn" is dropped,
+    as the Command continues the sentence. A word like "TV" keeps its capitals.
     """
     tag = (language or "").replace("_", "-").casefold()
     if tag.startswith(_TRADITIONAL_CHINESE):
         tag = "zh-tw"
-    template = (
-        FAILURE_MESSAGES.get(tag)
-        or FAILURE_MESSAGES.get(tag.split("-", 1)[0])
-        or FAILURE_MESSAGES["en"]
-    )
-    return template.format(command=command)
+    if tag not in FAILURE_MESSAGES:
+        tag = tag.split("-", 1)[0]
+    if tag not in FAILURE_MESSAGES:
+        tag = "en"
+    command = command.strip().rstrip(_SENTENCE_END).rstrip() or command
+    if tag == "en" and (words := command.split(maxsplit=1)):
+        first = words[0]
+        if len(first) > 1 and first[0].isupper() and first[1:].islower():
+            command = command[0].lower() + command[1:]
+    return FAILURE_MESSAGES[tag].format(command=command)
 
 
 def _failed(response: IntentResponse) -> bool:
