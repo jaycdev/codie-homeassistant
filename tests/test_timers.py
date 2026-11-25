@@ -60,6 +60,19 @@ async def test_a_command_the_built_in_agent_does_not_recognize_fails(
     assert "rephrase" in result["message"].lower()
 
 
+@pytest.mark.parametrize("command", ["turn off the kichen lamp", "turn off the lamp in the attic"])
+async def test_a_command_naming_no_entity_or_area_fails(
+    hass: HomeAssistant, codie: FakeCodie, command: str
+) -> None:
+    await start_codie(hass, codie)
+
+    result = await call(codie, "timer_start", command=command, minutes=5)
+
+    assert result["status"] == "failed"
+    assert result["code"] == "target_not_found"
+    assert "get_home_state" in result["message"]
+
+
 async def test_a_recognized_command_starts_a_timer(hass: HomeAssistant, codie: FakeCodie) -> None:
     await start_codie(hass, codie)
 

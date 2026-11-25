@@ -8,7 +8,7 @@ The alternatives were storing a deferred Tool call, which needs an arguments sch
 
 - The integration keeps its own Timers and its own cancel and status Tool. They do not appear in Home Assistant's timer system or on other voice satellites.
 - The Command is always run by the built-in agent, even when the user's default agent is an LLM, because that is the agent the check ran against. If the built-in agent does not support the Codie's AI language, the Timer Tools are unavailable.
-- The Expose list is checked when the Command runs, not when the Timer starts.
+- A Command naming no entity or area Home Assistant knows, such as a misheard name, fails at `timer_start`. The Expose list itself is checked when the Command runs, not when the Timer starts: the recognizer matches unexposed names too, so a Command for an unexposed entity starts and fails when the Timer ends.
 - We get the Command's result back, which Home Assistant's own timers discard.
 - The check accepts a Command that matches an intent or one of the user's sentence triggers, because both run when the Timer ends.
 - The check relies on the built-in agent's recognizer, which Home Assistant does not export as a public helper. If it is missing, the Timer Tools are unavailable; a Timer is never started unchecked.

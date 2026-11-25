@@ -11,6 +11,8 @@ from datetime import datetime, timedelta
 from functools import partial
 from typing import Any
 
+from hassil.models import UnmatchedTextEntity
+from hassil.recognize import MISSING_ENTITY
 from homeassistant.components.conversation import ConversationInput
 from homeassistant.components.conversation.agent_manager import async_converse, get_agent_manager
 from homeassistant.components.conversation.const import HOME_ASSISTANT_AGENT
@@ -322,11 +324,28 @@ class CodieTimers:
             language=self._language or "",
             agent_id=HOME_ASSISTANT_AGENT,
         )
-        if await agent.async_recognize_intent(user_input) is None and (
-            await agent.async_recognize_sentence_trigger(user_input) is None
-        ):
+        # Sentence triggers come first, as when the agent runs the Command.
+        if await agent.async_recognize_sentence_trigger(user_input) is not None:
+            return
+        result = await agent.async_recognize_intent(user_input)
+        if result is None:
             raise ToolError(
                 ERROR_INVALID_ARGUMENTS,
                 f"Home Assistant does not understand the Command '{command}'. Rephrase it as a "
                 "short home-control sentence, such as 'turn off the kitchen lamp'.",
+            )
+        if result.unmatched_entities:
+            # A sentence the agent knows, naming no entity or area it knows, such as a misheard
+            # name. It would fail when the Timer ends, so it fails now instead.
+            names = ", ".join(
+                sorted(
+                    repr(entity.text)
+                    for entity in result.unmatched_entities_list
+                    if isinstance(entity, UnmatchedTextEntity) and entity.text != MISSING_ENTITY
+                )
+            )
+            raise ToolError(
+                ERROR_TARGET_NOT_FOUND,
+                f"No entity or area matches {names or 'a name'} in the Command "
+                f"'{command}'. Call get_home_state for the exposed names and rephrase it.",
             )
