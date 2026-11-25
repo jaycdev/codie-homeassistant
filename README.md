@@ -123,6 +123,16 @@ The Character speaks the text in whatever language it is written. Nothing is tra
 
 The action returns as soon as the Codie accepts the message. It does not wait for the Character to finish speaking. The Codie's screen is never woken: if the Codie is asleep or locked, the action fails with an error that names the reason. Wake the Codie and try again.
 
+### Blueprints
+
+These blueprints make automations for common Announcements. Import one, then create an automation from it under **Settings → Automations & scenes → Blueprints**, and pick your Codie and sensors.
+
+| Blueprint | What it does | |
+| --- | --- | --- |
+| Doorbell | An Announcement the moment a doorbell binary sensor turns on, or a doorbell event entity is pressed. | [![Import blueprint](https://my.home-assistant.io/badges/blueprint_import.svg)](https://my.home-assistant.io/redirect/blueprint_import/?blueprint_url=https%3A%2F%2Fgithub.com%2Fjaycdev%2Fcodie-homeassistant%2Fblob%2Fmain%2Fblueprints%2Fautomation%2Fcodie%2Fdoorbell.yaml) |
+| Appliance finished | A Queued announcement once a power sensor stays below a threshold for a while, such as a washing machine or dishwasher at the end of its cycle. A sensor coming back after a restart doesn't count as finishing. | [![Import blueprint](https://my.home-assistant.io/badges/blueprint_import.svg)](https://my.home-assistant.io/redirect/blueprint_import/?blueprint_url=https%3A%2F%2Fgithub.com%2Fjaycdev%2Fcodie-homeassistant%2Fblob%2Fmain%2Fblueprints%2Fautomation%2Fcodie%2Fappliance_finished.yaml) |
+| Morning briefing | A Queued announcement with today's weather and, optionally, today's calendar events. Given at a chosen time, or at the first presence detected after it. It names fewer events when needed to stay within 200 characters. | [![Import blueprint](https://my.home-assistant.io/badges/blueprint_import.svg)](https://my.home-assistant.io/redirect/blueprint_import/?blueprint_url=https%3A%2F%2Fgithub.com%2Fjaycdev%2Fcodie-homeassistant%2Fblob%2Fmain%2Fblueprints%2Fautomation%2Fcodie%2Fmorning_briefing.yaml) |
+
 ## Troubleshooting
 
 - **Connected is off.** Check that the Codie is awake and on the network. Home Assistant keeps retrying with a growing delay.
