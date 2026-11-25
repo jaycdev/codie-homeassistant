@@ -192,4 +192,6 @@ logger:
     custom_components.codie: debug
 ```
 
-When you report a problem, never share the integration's stored credentials or a request's `X-Local-*` headers.
+When you report a problem, attach the integration's diagnostics: open the Codie's entry under **Settings → Devices & services**, open its menu (⋮) and select **Download diagnostics**. The file has the connection state and why the last connection ended, the Tools registered on the Codie and why any were left out, the latest settings and music playback, the running Timers with their Commands, and the Codie's system details. The credentials, the IDs of the Codie and its user, and the username are redacted.
+
+Never share the integration's stored credentials or a request's `X-Local-*` headers.

@@ -319,13 +319,16 @@ async def _assist_definition(
     tool: CodieTool,
     api_tools: list[llm.Tool],
     serializer: Callable[[Any], Any],
-) -> tuple[str, dict[str, Any]] | None:
-    """The description and parameters of a Tool backed by Assist, or None to leave it out."""
+) -> tuple[str, dict[str, Any]]:
+    """The description and parameters of a Tool backed by Assist.
+
+    Raises `ToolLeftOut` if the Tool cannot be offered.
+    """
     actions = await _offered_actions(hass, tool, api_tools)
     assist_name = next(iter(actions.values())) if actions else tool.assist_name
     if (assist_tool := await _assist_tool(hass, assist_name, api_tools)) is None:
         _LOGGER.debug("Assist tool %s is not available; skipping %s", assist_name, tool.name)
-        return None
+        raise ToolLeftOut(f"Assist tool {assist_name} is not available")
     description, parameters = assist_tool.description or "", assist_tool.parameters
     try:
         schema = from_probatio(parameters, serializer)
@@ -336,31 +339,38 @@ async def _assist_definition(
             schema.setdefault("required", []).append("action")
     except SchemaLimitError as err:
         _LOGGER.warning("Skipping tool %s: %s", tool.name, err)
-        return None
+        raise ToolLeftOut(str(err)) from err
     if tool.scripts_intro and (scripts := _script_names(hass)):
         description = _list_names(tool.scripts_intro, scripts)
     return description, schema
 
 
-async def build_catalog(
-    hass: HomeAssistant, expected_revision: int, language: str | None
-) -> dict[str, Any]:
-    """The body for `PUT /data/user/tool-integrations/{id}`.
+class ToolLeftOut(Exception):
+    """A Tool cannot be offered; the message says why."""
+
+
+async def _build_tools(
+    hass: HomeAssistant, language: str | None
+) -> tuple[list[dict[str, Any]], dict[str, str]]:
+    """The Tool definitions, and the Tools left out, each with the reason.
 
     `language` is the Codie's AI language, which decides whether the Timer Tools are offered.
     """
     api_tools, serializer = await _assist_api_tools(hass)
     tools: list[dict[str, Any]] = []
+    left_out: dict[str, str] = {}
     for tool in TOOLS:
-        if tool.parameters is not None:
-            if not timers_supported(hass, language):
+        try:
+            if tool.parameters is None:
+                description, schema = await _assist_definition(hass, tool, api_tools, serializer)
+            elif timers_supported(hass, language):
+                description, schema = "", copy.deepcopy(dict(tool.parameters))
+            else:
                 _LOGGER.debug("Timers are unavailable; skipping %s", tool.name)
-                continue
-            description, schema = "", copy.deepcopy(dict(tool.parameters))
-        elif (found := await _assist_definition(hass, tool, api_tools, serializer)) is None:
+                raise ToolLeftOut(tool.unavailable or "Timers are unavailable")
+        except ToolLeftOut as err:
+            left_out[tool.name] = str(err)
             continue
-        else:
-            description, schema = found
         definition = {
             "name": tool.name,
             "description": (tool.description or description)[:MAX_DESCRIPTION_CHARS],
@@ -372,6 +382,11 @@ async def build_catalog(
             "timeout_ms": DEFAULT_TIMEOUT_MS,
         }
         tools.append({**definition, "version": _version(definition)})
+    return tools, left_out
+
+
+def _catalog(tools: list[dict[str, Any]], expected_revision: int) -> dict[str, Any]:
+    """The body for `PUT /data/user/tool-integrations/{id}`."""
     return {
         "protocol_version": "v1",
         "expected_revision": expected_revision,
@@ -381,10 +396,21 @@ async def build_catalog(
     }
 
 
+@dataclass(frozen=True)
+class RegisteredCatalog:
+    """The catalog the Codie last accepted."""
+
+    tools: list[dict[str, Any]]
+    # The Tools that were left out, each with the reason.
+    left_out: dict[str, str]
+    # The revision the Codie gave it; None if its reply did not say.
+    revision: int | None
+
+
 async def async_register_catalog(
     hass: HomeAssistant, client: CodieClient, integration_id: str, language: str | None
-) -> list[dict[str, Any]]:
-    """Create or update the catalog and return the Tools it now holds.
+) -> RegisteredCatalog:
+    """Create or update the catalog and return what the Codie now holds.
 
     On a revision conflict the current revision is read again and the PUT retried.
     """
@@ -393,16 +419,19 @@ async def async_register_catalog(
         attempt += 1
         current = await client.async_get_tool_integration(integration_id)
         revision = int(current["revision"]) if current else 0
-        catalog = await build_catalog(hass, revision, language)
+        tools, left_out = await _build_tools(hass, language)
         try:
-            await client.async_put_tool_integration(integration_id, catalog)
+            reply = await client.async_put_tool_integration(
+                integration_id, _catalog(tools, revision)
+            )
         except CodieApiError as err:
             if err.status != 409 or attempt >= REGISTER_ATTEMPTS:
                 raise
             _LOGGER.debug("Catalog revision conflict, re-reading (attempt %s)", attempt)
             continue
-        tools: list[dict[str, Any]] = catalog["tools"]
-        return tools
+        new_revision = reply.get("revision")
+        valid = isinstance(new_revision, int) and not isinstance(new_revision, bool)
+        return RegisteredCatalog(tools, left_out, new_revision if valid else None)
 
 
 class CatalogRegistrar:
@@ -415,22 +444,25 @@ class CatalogRegistrar:
         self._client = client
         self._integration_id = integration_id
         self._language = language
-        self._tools: list[dict[str, Any]] = []
+        self.catalog: RegisteredCatalog | None = None
         self._lock = asyncio.Lock()
 
     async def async_register(self) -> None:
         """Register the catalog unconditionally."""
         async with self._lock:
-            self._tools = await async_register_catalog(
+            self.catalog = await async_register_catalog(
                 self._hass, self._client, self._integration_id, self._language
             )
 
     async def async_refresh(self) -> bool:
         """Register again if the available Tools changed. Returns whether it did."""
         async with self._lock:
-            if (await build_catalog(self._hass, 0, self._language))["tools"] == self._tools:
+            tools, left_out = await _build_tools(self._hass, self._language)
+            if self.catalog is not None and tools == self.catalog.tools:
+                # The same Tools, but a Tool may be left out for another reason now.
+                self.catalog = dataclasses.replace(self.catalog, left_out=left_out)
                 return False
-            self._tools = await async_register_catalog(
+            self.catalog = await async_register_catalog(
                 self._hass, self._client, self._integration_id, self._language
             )
             return True

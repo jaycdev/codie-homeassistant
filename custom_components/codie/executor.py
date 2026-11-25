@@ -8,11 +8,13 @@ import logging
 import time
 from collections.abc import Awaitable, Callable
 from contextlib import suppress
+from datetime import datetime
 from typing import Any
 
 from aiohttp import ClientError, ClientWebSocketResponse, WSMsgType
+from homeassistant.util import dt as dt_util
 
-from .api import CodieAuthError, CodieClient, CodieError
+from .api import CodieAuthError, CodieClient, CodieConnectionError, CodieError
 from .errors import ToolError
 from .tools import DEFAULT_TIMEOUT_MS, failure_data
 
@@ -31,6 +33,11 @@ ERROR_INTERNAL = "internal_error"
 ToolHandler = Callable[[str, dict[str, Any]], Awaitable[dict[str, Any]]]
 # Told the Tool, its arguments and the code it failed with (None if it succeeded) once a call ends.
 CallObserver = Callable[[str, dict[str, Any], str | None], None]
+
+
+def _describe(err: BaseException) -> str:
+    """The error's type and message, or only its type if it has no message."""
+    return f"{type(err).__name__}: {err}" if str(err) else type(err).__name__
 
 
 class CodieExecutor:
@@ -58,6 +65,9 @@ class CodieExecutor:
         self._was_ready = False
         self._wake = asyncio.Event()
         self.connected = False
+        # For diagnostics: when the last connection became `ready`, and why the last one ended.
+        self.last_connected: datetime | None = None
+        self.last_disconnect_reason: str | None = None
 
     def add_listener(self, listener: Callable[[], None]) -> Callable[[], None]:
         """Call `listener` whenever `connected` changes. Returns the remover."""
@@ -72,14 +82,16 @@ class CodieExecutor:
             started = time.monotonic()
             self._was_ready = False
             try:
-                await self._serve()
+                self.last_disconnect_reason = await self._serve()
             except CodieAuthError as err:
+                self.last_disconnect_reason = f"The Codie rejected our credentials: {err}"
                 # Reconnecting with credentials the Codie rejects cannot work; reauth takes over.
                 _LOGGER.warning("The Codie no longer accepts our credentials: %s", err)
                 if self._on_auth_failed is not None:
                     self._on_auth_failed()
                 return
             except (CodieError, ClientError, OSError, TimeoutError, TypeError, ValueError) as err:
+                self.last_disconnect_reason = _describe(err)
                 # Warn once per outage; a Codie that is off for days must not flood the log.
                 log = _LOGGER.warning if failures == 0 else _LOGGER.debug
                 log("Executor connection failed: %s", err)
@@ -120,19 +132,28 @@ class CodieExecutor:
             await asyncio.wait_for(self._wake.wait(), delay)
         self._reconnect_now = False
 
-    async def _serve(self) -> None:
-        """One connection: connect, wait for `ready`, and serve invokes until it closes."""
+    async def _serve(self) -> str:
+        """One connection: connect, wait for `ready`, and serve invokes until it closes.
+
+        Returns why it closed.
+        """
         ws = await self._client.async_connect_executor(self._integration_id)
         self._ws = ws
         try:
             if self._reconnect_now:
                 # The catalog changed while this connection was being made.
-                return
-            ready = await ws.receive_json(timeout=READY_TIMEOUT_S)
+                return "The Tool catalog changed"
+            try:
+                ready = await ws.receive_json(timeout=READY_TIMEOUT_S)
+            except TimeoutError as err:
+                raise CodieConnectionError(
+                    f"The Codie did not send ready within {READY_TIMEOUT_S} s"
+                ) from err
             if ready.get("type") != "ready":
                 raise CodieError(f"Expected ready, got {ready.get('type')}")
             _LOGGER.debug("Executor ready for %s", self._integration_id)
             self._was_ready = True
+            self.last_connected = dt_util.utcnow()
             self._set_connected(True)
             async for message in ws:
                 if message.type is not WSMsgType.TEXT:
@@ -143,7 +164,16 @@ class CodieExecutor:
                     _LOGGER.warning("Ignoring an executor message that is not JSON")
                     continue
                 if not self._dispatch(ws, payload):
-                    break
+                    return "The Codie reported a protocol error"
+            if self._closing:
+                return "Home Assistant closed the connection"
+            if self._reconnect_now:
+                return "The Tool catalog changed"
+            # A heartbeat without a pong, or a reset connection, ends the loop with the error
+            # kept here and an abnormal close code.
+            if (error := ws.exception()) is not None:
+                return f"The connection failed: {_describe(error)}"
+            return f"The Codie closed the connection (code {ws.close_code})"
         finally:
             self._set_connected(False)
             self._abandon_calls()
