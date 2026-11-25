@@ -36,6 +36,7 @@ The Codie is added as a device with these entities:
 - **Character** (select): one option per Slot, named after its Character, and the active one selected. Choosing another switches the Codie to that Slot; the Codie then loads the Character, which can take a moment to show. When two Slots hold Characters with the same name, the options add the Slot (`Aiko (Slot 2)`), and a Slot whose Character has no name is shown as `Slot 4`. Both are unavailable while the Codie does not report its Characters, and so is Voice volume, which is read with them.
 - **Voice volume** (number, 0–100): how loud the Character speaks, Announcements included. It follows the active Slot: it shows and sets the volume of the Character in that Slot, so it changes when you switch Characters, from the Codie or with the Character select.
 - **Music volume** (number, 0–100): how loud the Codie plays music. One level for the whole Codie. It works without the music page open. The Codie only queues the change, so Home Assistant asks it for up to three seconds whether the change ran. The action succeeds once the Codie reports that it applied the change. The Codie has 11 volume steps (0, 9, 18, 27 … 90, 100), so Home Assistant sets the step nearest the level you choose: 40 becomes 36, and 41 becomes 45. It fails if the Codie reports an error, or says nothing within three seconds and its Music volume is not in that step. Unavailable while the Codie's music player is not ready.
+- **Music** (media player): the Codie's music. It is playing, paused, buffering or idle, and shows the track's title, artist, album, length and position; the Codie reports no artwork. The `music_mode` attribute says whether the Codie is in Music mode. Play, pause, stop, next and previous only work in Music mode: open the music player on the Codie first, or the action fails and says so. Its volume is the Music volume, works the same way and needs no Music mode; volume up and down move one of the Codie's 11 steps. Like the Music volume, each control waits up to three seconds for the Codie to report that it ran. If the Codie says nothing in that time, the action still succeeds when the player shows the change (it plays after play, or the track changed after next), and fails otherwise. Unavailable while the Codie's music player is not ready.
 - **Screen** (switch): turns the Codie's screen on and off. It is unknown when the Codie's two screens disagree. If the Codie sent the change but could not confirm it, the action fails.
 - **Screen brightness** (number, 0–100 %, configuration): unavailable while the Codie reports that its brightness cannot be set.
 - **Side lights** (switch, configuration): the LED strip whenever the Codie is not in Music mode.
@@ -60,21 +61,63 @@ The Character can call these Tools. Each one runs one of Home Assistant's own As
 | `climate_set_temp` | Sets the target temperature of a thermostat or AC. | HassClimateSetTemperature |
 | `set_position` | Sets the position of a cover or valve. | HassSetPosition |
 | `fan_set_speed` | Sets a fan's speed. | HassFanSetSpeed |
-| `media_pause` | Pauses a media player. | HassMediaPause |
-| `media_unpause` | Resumes a media player. | HassMediaUnpause |
-| `media_next` | Skips to the next track. | HassMediaNext |
-| `media_previous` | Goes back to the previous track. | HassMediaPrevious |
+| `media_control` | Pauses, resumes, or skips to the next or previous item of a media player, by its `action`. | HassMediaPause, HassMediaUnpause, HassMediaNext, HassMediaPrevious |
 | `set_volume` | Sets a media player's volume. | HassSetVolume |
 | `media_search_play` | Searches for media and plays it. | HassMediaSearchAndPlay |
 | `vacuum_start` | Starts a vacuum. | HassVacuumStart |
 | `list_add_item` | Adds an item to a shopping or to-do list. | HassListAddItem |
 | `todo_get_items` | Reads the items on a to-do list. | todo_get_items |
+| `timer_start` | Starts a [Timer](#timers): a Command to run after a delay. | None: the integration runs it |
+| `timer_control` | Cancels a running Timer, or says how much time is left on one or all of them, by its `action`. | None: the integration runs it |
 
-The list is fixed. A Tool is left out if your Home Assistant doesn't have its Assist tool, or if the tool's parameters don't fit the Codie's limits. Nothing replaces it. Exposed scripts are not Tools. The Codie allows at most 16 Tools per integration, and a list that changed with your setup would make the Character's abilities hard to predict.
+The list is fixed. A Tool is left out if your Home Assistant doesn't have its Assist tool, or if the tool's parameters don't fit the Codie's limits. Nothing replaces it. The Timer Tools are left out too if Home Assistant's built-in agent doesn't support the Codie's AI language. Exposed scripts are not Tools of their own: the Character runs them through `turn_on`, without their fields, and `turn_on`'s description lists their names so the Character can find them. The Codie allows at most 16 Tools per integration, and a list that changed with your setup would make the Character's abilities hard to predict. The catalog has 15 Tools. One place is left free on purpose, for a Tool added later.
 
 The Character keeps the Tools it had when a conversation started. After a change, such as a Home Assistant restart or upgrade, or an integration that adds Assist tools, start a new conversation to get the new Tools.
 
 The Character understands and replies in the Codie's AI language, set on the Codie. Home Assistant reads it when the integration starts. If you change it, reload the integration.
+
+## Timers
+
+A Timer makes the Character act on the home later: "Hey Codie, turn off the kitchen lamp in 20 minutes". The Character sets it with `timer_start`, giving a **Command** (a short home-control sentence such as "turn off the kitchen lamp"), a delay and, if it wants, a name. When the Timer ends, Home Assistant runs the Command.
+
+Timers are not the Codie's own Alarms and Reminders. Those belong to the Character, are set on the Codie, and can only speak. A Timer acts on the home. A plain countdown that only rings is not a Timer here.
+
+- **The Command is checked when the Timer is set.** Home Assistant's built-in agent must understand it as one of its own sentences or as one of your sentence triggers, in the Codie's AI language. It must also name entities or areas Home Assistant knows, so a misheard name fails too. If either check fails, the Tool fails at once and the Character can rephrase it or tell you. Whether those entities are Exposed is checked later, when the Command runs.
+- **The built-in agent runs it.** Whatever your default Assist agent is, the Command always runs through the built-in one, because that is the agent that checked it. If the built-in agent doesn't support the Codie's AI language, or Home Assistant no longer offers the recognizer the check needs, the Timer Tools are unavailable and the Character doesn't have them. A Timer is never started unchecked.
+- **Names.** Without a `name`, the Command names the Timer. Names are matched without regard to case, and a part of a name works if it fits only one Timer. Two Timers can't share a name.
+- **Limits.** A Timer lasts more than zero and at most 24 hours (`hours`, `minutes` and `seconds` add up). A Codie runs at most 10 Timers at once.
+- **Cancel and status.** `timer_control` with `status` lists every running Timer with the time left and its Command, or one Timer by name. With `cancel`, it stops the named Timer, or the only one if just one is running. If several are running and none is named, the Character is told to ask which.
+- **Restarts.** Timers belong to the Codie they were set on and are stored by Home Assistant. They resume with their remaining time after a restart or a reload of the integration. A Timer that ended while Home Assistant was down is dropped with a warning in the log, and its Command is never run late. Removing the Codie from Home Assistant deletes its Timers.
+- **Failures are announced.** If the Command fails when the Timer ends, for example because the entity is no longer Exposed, the Character says so with an immediate [Announcement](#announcements) such as "I couldn't turn off the kitchen lamp: ...". A Command that works is silent. If the Codie can't be reached, the failure is only written to the log.
+
+Timers are kept by this integration, not by Home Assistant's own timers, so they don't appear in Home Assistant's timer list or on other voice satellites.
+
+## Seeing what the Character did
+
+Nothing else in Home Assistant records the Tool calls the Character makes, so the integration does.
+
+**Event.** Every Tool call fires a `codie_tool_called` event once it has finished, whether it succeeded or failed. That includes the read Tools (`get_home_state`, `todo_get_items`) and calls that failed because they timed out. A call the Codie abandoned by disconnecting has no known outcome and fires nothing. The event data:
+
+- `device_id`: The Codie's device id, to filter on when you have several Codies. `null` if the device is missing.
+- `tool`: The Tool's name, such as `turn_off`. It is whatever name the Codie sent, so it can be one that does not exist.
+- `assist_tool`: The Assist tool the Tool maps to, such as `HassTurnOff`. For `media_control` it is the one the call's `action` selects. `null` for the Timer Tools, for an unknown Tool and for an invalid `action`.
+- `arguments`: The arguments the Character gave, as received.
+- `success`: `true` if the call succeeded.
+- `error`: The error code if it failed, otherwise `null`. For example `target_not_found`, `ambiguous_target`, `invalid_arguments`, `tool_unavailable`, `unknown_tool`, `timeout` or `internal_error`.
+- `entity_ids`: The entities the call acted on, as a list, when Home Assistant says which. Empty for a failed call and for Tools that do not act on entities.
+
+An automation can react to a call, for example to notify you whenever the Character turns something off:
+
+```yaml
+triggers:
+  - trigger: event
+    event_type: codie_tool_called
+    event_data:
+      tool: turn_off
+      success: true
+```
+
+**Logbook.** The calls that change something also appear in the logbook, listed under the Codie whose Character made the call, such as "turned off Kitchen light" or "could not turn off Garage light (target_not_found)". The entry is linked to that Codie's device and, if the call acted on exactly one entity, to that entity's history too. Home Assistant can only link a single entity to an entry, so a call that acted on several has one entry under the Codie, naming them all. Calls that only read are left out so they do not flood the logbook: the read Tools, and `timer_control` with `status`. The logbook can only describe every event of one type or none, so the integration fires a second event, `codie_tool_logged`, for the calls it shows. It has the same data as `codie_tool_called`, plus `entity_id` when the call acted on exactly one entity. Use `codie_tool_called` in automations.
 
 ## Exposure controls access
 

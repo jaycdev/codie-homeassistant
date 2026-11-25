@@ -144,7 +144,7 @@ class CodieBrightness:
 
 @dataclass(frozen=True)
 class CodieMusicPlayback:
-    """The parts of the music playback state that the Music volume needs."""
+    """The parts of the music playback state that the Music volume and player need."""
 
     # None while the Codie is not ready to play music.
     volume: int | None
@@ -152,6 +152,21 @@ class CodieMusicPlayback:
     request_id: str | None
     applied: bool
     error_code: str | None
+    # IDLE, LOADING, PLAYING, PAUSED, COMPLETED or FAILED; None if the Codie left it out.
+    status: str | None = None
+    # The current queue entry; one track can be in the queue more than once.
+    entry_id: str | None = None
+    # The current track. The text is None if the Codie left it out; the position is 0, as the
+    # Codie leaves out fields that are zero, and None only without a track.
+    track_id: str | None = None
+    title: str | None = None
+    artist: str | None = None
+    album: str | None = None
+    duration_ms: int | None = None
+    position_ms: int | None = None
+    # The Codie's own time for this snapshot, as a Unix time in milliseconds; None if it left
+    # it out.
+    updated_at_ms: int | None = None
 
 
 @dataclass(frozen=True)
@@ -185,6 +200,12 @@ def _number(data: dict[str, Any], key: str) -> int | None:
     if isinstance(value, bool) or not isinstance(value, int | float):
         return None
     return round(value)
+
+
+def _text(data: dict[str, Any], key: str) -> str | None:
+    """A non-empty string from `data`, or None if it is missing, empty or not a string."""
+    value = data.get(key)
+    return value if isinstance(value, str) and value else None
 
 
 def _flag(data: dict[str, Any], key: str) -> bool | None:
@@ -317,7 +338,7 @@ class CodieClient:
         await self.async_request("PUT", "/data/user/character", {"tts_volume": volume})
 
     async def async_get_music_playback(self) -> CodieMusicPlayback:
-        """Read the Music volume (0 to 100) and the outcome of the last command."""
+        """Read the Music volume (0 to 100), the track, and the outcome of the last command."""
         data = _as_dict(await self.async_request("GET", "/data/user/music/playback"))
         volume_max = _number(data, "volume_max")
         volume = _number(data, "volume_level")
@@ -328,26 +349,51 @@ class CodieClient:
             # The Codie leaves out fields that are zero.
             volume = 0
         request_id = data.get("request_id")
-        error_code = data.get("error_code")
+        queue = data.get("queue")
+        track_id = _text(data, "track_id")
+        position_ms = _number(data, "position_ms")
+        if position_ms is None and track_id is not None:
+            position_ms = 0
         return CodieMusicPlayback(
             volume=volume,
             request_id=request_id if isinstance(request_id, str) else None,
             applied=data.get("applied") is True,
-            error_code=error_code if isinstance(error_code, str) and error_code else None,
+            error_code=_text(data, "error_code"),
+            status=_text(data, "status"),
+            entry_id=_text(queue, "current_entry_id") if isinstance(queue, dict) else None,
+            track_id=track_id,
+            title=_text(data, "track_name"),
+            artist=_text(data, "artist"),
+            album=_text(data, "album"),
+            duration_ms=_number(data, "duration_ms"),
+            position_ms=position_ms,
+            updated_at_ms=_number(data, "updated_at_ms") or None,
         )
 
-    async def async_set_music_volume(self, volume: int) -> str:
-        """Ask the Codie to set the Music volume and return the command's `request_id`.
+    async def async_music_control(self, action: str, **fields: Any) -> str:
+        """Send the music command `action` with `fields`, and return its `request_id`.
 
         The Codie only queues the command; `async_get_music_playback` shows whether it ran.
+        Every command but SET_VOLUME needs Music mode: without it the Codie answers 409
+        `MODE_INACTIVE`.
         """
         request_id = str(uuid.uuid4())
         await self.async_request(
             "POST",
             "/data/user/music/control",
-            {"action": "SET_VOLUME", "volume_level": volume, "request_id": request_id},
+            {"action": action, **fields, "request_id": request_id},
         )
         return request_id
+
+    async def async_set_music_volume(self, volume: int) -> str:
+        """Ask the Codie to set the Music volume and return the command's `request_id`."""
+        return await self.async_music_control("SET_VOLUME", volume_level=volume)
+
+    async def async_get_music_mode(self) -> bool:
+        """Read whether the music page is open, that is whether the Codie is in Music mode."""
+        data = _as_dict(await self.async_request("GET", "/data/user/music/page"))
+        # The Codie leaves out fields that are false.
+        return data.get("is_open") is True
 
     async def async_get_brightness(self) -> CodieBrightness:
         """Read the screen brightness."""

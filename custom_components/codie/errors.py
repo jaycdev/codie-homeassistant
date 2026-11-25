@@ -7,6 +7,16 @@ from homeassistant.exceptions import HomeAssistantError
 from .api import CodieAuthError, CodieConnectionError, CodieError
 from .const import DOMAIN
 
+# The codes a failed Tool call reports to the Codie.
+ERROR_UNKNOWN_TOOL = "unknown_tool"
+ERROR_TOOL_UNAVAILABLE = "tool_unavailable"
+ERROR_HOME_ASSISTANT = "home_assistant_error"
+ERROR_INVALID_ARGUMENTS = "invalid_arguments"
+ERROR_TARGET_NOT_FOUND = "target_not_found"
+ERROR_AMBIGUOUS_TARGET = "ambiguous_target"
+ERROR_INTENT_FAILED = "intent_failed"
+ERROR_ASSIST_FAILED = "assist_failed"
+
 
 class ToolError(Exception):
     """A Tool call failed; `code` goes back to the Codie in the `failed` result."""

@@ -9,8 +9,10 @@ from typing import Any
 from unittest.mock import patch
 
 import pytest
+from homeassistant.components.homeassistant.exposed_entities import async_expose_entity
 from homeassistant.const import EVENT_COMPONENT_LOADED
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers import intent
 from homeassistant.setup import async_setup_component
 
@@ -209,6 +211,86 @@ async def test_new_assist_tool_triggers_reregistration_and_reconnect(
     assert stored["revision"] == 2
     assert stored["catalog"]["expected_revision"] == 1
     assert {t["name"] for t in stored["catalog"]["tools"]} == before | {"turn_on"}
+
+
+class _TurnOn(intent.IntentHandler):
+    intent_type = "HassTurnOn"
+
+    async def async_handle(self, intent_obj: intent.Intent) -> intent.IntentResponse:
+        return intent_obj.create_response()
+
+
+def _turn_on_description(fake: FakeCodie) -> str:
+    tools = fake.tool_integrations[INTEGRATION_ID]["catalog"]["tools"]
+    return str(next(t for t in tools if t["name"] == "turn_on")["description"])
+
+
+def _add_script(hass: HomeAssistant, name: str, *, exposed: bool) -> str:
+    """A script with a registry entry, like a real one."""
+    entry = er.async_get(hass).async_get_or_create(
+        "script",
+        "test",
+        name,
+        suggested_object_id=name.lower().replace(" ", "_"),
+        original_name=name,
+    )
+    hass.states.async_set(entry.entity_id, "off", {"friendly_name": name})
+    async_expose_entity(hass, "conversation", entry.entity_id, exposed)
+    return entry.entity_id
+
+
+async def _assert_script_change_reregisters(
+    hass: HomeAssistant, fake_codie: FakeCodie, change: Callable[[], object], expected: str
+) -> None:
+    """Make `change` once connected; the catalog is then registered again with `expected`."""
+    await setup(hass, fake_codie)
+    await wait_connected(hass, fake_codie, True)
+
+    change()
+    await wait_for(lambda: fake_codie.executor_connects == 2)
+
+    assert expected in _turn_on_description(fake_codie)
+
+
+@CLOSES_A_LIVE_SOCKET
+async def test_a_script_that_becomes_exposed_reregisters(
+    hass: HomeAssistant, fake_codie: FakeCodie
+) -> None:
+    intent.async_register(hass, _TurnOn())
+    script = _add_script(hass, "Movie time", exposed=False)
+
+    await _assert_script_change_reregisters(
+        hass,
+        fake_codie,
+        lambda: async_expose_entity(hass, "conversation", script, True),
+        "Movie time",
+    )
+
+
+@CLOSES_A_LIVE_SOCKET
+async def test_a_script_that_is_added_reregisters(
+    hass: HomeAssistant, fake_codie: FakeCodie
+) -> None:
+    intent.async_register(hass, _TurnOn())
+
+    await _assert_script_change_reregisters(
+        hass, fake_codie, lambda: _add_script(hass, "Movie time", exposed=True), "Movie time"
+    )
+
+
+@CLOSES_A_LIVE_SOCKET
+async def test_a_script_that_is_renamed_reregisters(
+    hass: HomeAssistant, fake_codie: FakeCodie
+) -> None:
+    intent.async_register(hass, _TurnOn())
+    script = _add_script(hass, "Movie time", exposed=True)
+
+    await _assert_script_change_reregisters(
+        hass,
+        fake_codie,
+        lambda: er.async_get(hass).async_update_entity(script, aliases=["Cinema"]),
+        "Cinema",
+    )
 
 
 async def test_unchanged_tool_set_is_not_reregistered(

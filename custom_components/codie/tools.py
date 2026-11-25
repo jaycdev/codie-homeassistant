@@ -3,17 +3,18 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 import dataclasses
 import hashlib
 import json
 import logging
-from collections.abc import Callable
-from dataclasses import dataclass
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass, field
 from typing import Any
 
 import probatio
 from homeassistant.components.homeassistant.exposed_entities import async_should_expose
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, State
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import area_registry as ar
 from homeassistant.helpers import device_registry as dr
@@ -22,8 +23,26 @@ from homeassistant.helpers import intent, llm
 from homeassistant.helpers.importlib import async_import_module
 
 from .api import CodieApiError, CodieClient
-from .errors import ToolError, ToolNeedsClarification
+from .errors import (
+    ERROR_AMBIGUOUS_TARGET,
+    ERROR_ASSIST_FAILED,
+    ERROR_HOME_ASSISTANT,
+    ERROR_INTENT_FAILED,
+    ERROR_INVALID_ARGUMENTS,
+    ERROR_TARGET_NOT_FOUND,
+    ERROR_TOOL_UNAVAILABLE,
+    ERROR_UNKNOWN_TOOL,
+    ToolError,
+    ToolNeedsClarification,
+)
 from .schema import SchemaLimitError, from_probatio
+from .timers import (
+    MAX_COMMAND_CHARS,
+    MAX_NAME_CHARS,
+    TIMERS_UNAVAILABLE,
+    CodieTimers,
+    timers_supported,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -35,15 +54,6 @@ MAX_ERROR_CHARS = 1000
 MAX_DESCRIPTION_CHARS = 200
 MAX_NAMES_CHARS = 600
 REGISTER_ATTEMPTS = 3
-
-ERROR_UNKNOWN_TOOL = "unknown_tool"
-ERROR_TOOL_UNAVAILABLE = "tool_unavailable"
-ERROR_HOME_ASSISTANT = "home_assistant_error"
-ERROR_INVALID_ARGUMENTS = "invalid_arguments"
-ERROR_TARGET_NOT_FOUND = "target_not_found"
-ERROR_AMBIGUOUS_TARGET = "ambiguous_target"
-ERROR_INTENT_FAILED = "intent_failed"
-ERROR_ASSIST_FAILED = "assist_failed"
 
 ASSIST_LIVE_CONTEXT = "GetLiveContext"
 ASSIST_TODO_GET_ITEMS = "todo_get_items"
@@ -61,6 +71,10 @@ _ASSIST_RESULT_SCHEMA: dict[str, Any] = {
 }
 
 
+# In place of an Assist tool name: the integration handles the Tool itself.
+INTEGRATION = ""
+
+
 @dataclass(frozen=True)
 class CodieTool:
     """One Tool offered to the Character and the Assist tool that runs it."""
@@ -75,6 +89,32 @@ class CodieTool:
     hidden: tuple[str, ...] = ()
     # Replaces the generic message when Assist does not offer this Tool.
     unavailable: str | None = None
+    # Makes the Tool take a required `action` and run the Assist intent that action maps to
+    # (ADR-0003). All of them take the same parameters; those of the first one offered are used.
+    actions: Mapping[str, str] = field(default_factory=dict)
+    # The start of the description when exposed scripts are listed after it. Assist's own
+    # description is too long to leave room for their names.
+    scripts_intro: str | None = None
+    # The parameters of a Tool the integration handles itself, such as the Timer Tools. It has
+    # no Assist tool to take them from, so `assist_name` is `INTEGRATION`.
+    parameters: Mapping[str, Any] | None = None
+    # Actions of a combined Tool that only read, so the Tool is not a read Tool as a whole.
+    read_actions: tuple[str, ...] = ()
+
+    def assist_name_for(self, arguments: Mapping[str, Any]) -> str | None:
+        """The Assist tool a call with `arguments` runs, or None if there is none.
+
+        That is the intent the `action` maps to for a combined Tool, and none for a Tool the
+        integration handles itself or for an `action` that is missing or unknown.
+        """
+        if not self.actions:
+            return self.assist_name or None
+        action = arguments.get("action")
+        return self.actions.get(action) if isinstance(action, str) else None
+
+    def reads(self, arguments: Mapping[str, Any]) -> bool:
+        """Whether a call with `arguments` only reads."""
+        return self.risk == "read" or arguments.get("action") in self.read_actions
 
 
 TOOLS: tuple[CodieTool, ...] = (
@@ -88,16 +128,34 @@ TOOLS: tuple[CodieTool, ...] = (
             "device name or its state."
         ),
     ),
-    CodieTool("turn_on", "HassTurnOn", "reversible", hidden=("device_class",)),
+    CodieTool(
+        "turn_on",
+        "HassTurnOn",
+        "reversible",
+        hidden=("device_class",),
+        # get_home_state leaves scripts out, so the Character finds them in this description.
+        scripts_intro="Turns on/opens/locks a device or entity, or runs a script. Scripts: ",
+    ),
     CodieTool("turn_off", "HassTurnOff", "reversible", hidden=("device_class",)),
     CodieTool("light_set", "HassLightSet", "reversible"),
     CodieTool("climate_set_temp", "HassClimateSetTemperature", "reversible"),
     CodieTool("set_position", "HassSetPosition", "reversible"),
     CodieTool("fan_set_speed", "HassFanSetSpeed", "reversible"),
-    CodieTool("media_pause", "HassMediaPause", "reversible"),
-    CodieTool("media_unpause", "HassMediaUnpause", "reversible"),
-    CodieTool("media_next", "HassMediaNext", "reversible"),
-    CodieTool("media_previous", "HassMediaPrevious", "reversible"),
+    CodieTool(
+        "media_control",
+        "HassMediaPause",
+        "reversible",
+        description=(
+            "Pauses, resumes, or skips to the next or previous item of a media player. "
+            "Set action to pause, resume, next or previous."
+        ),
+        actions={
+            "pause": "HassMediaPause",
+            "resume": "HassMediaUnpause",
+            "next": "HassMediaNext",
+            "previous": "HassMediaPrevious",
+        },
+    ),
     CodieTool("set_volume", "HassSetVolume", "reversible"),
     CodieTool("media_search_play", "HassMediaSearchAndPlay", "reversible"),
     CodieTool("vacuum_start", "HassVacuumStart", "reversible"),
@@ -107,6 +165,53 @@ TOOLS: tuple[CodieTool, ...] = (
         ASSIST_TODO_GET_ITEMS,
         "read",
         unavailable="No to-do list is exposed to Assist",
+    ),
+    CodieTool(
+        "timer_start",
+        INTEGRATION,
+        "reversible",
+        description=(
+            "Runs a home-control Command after a delay, such as 'turn off the kitchen lamp' in "
+            "20 minutes. At most 24 hours. Give it a name to refer to it later."
+        ),
+        unavailable=TIMERS_UNAVAILABLE,
+        parameters={
+            "type": "object",
+            "properties": {
+                "command": {
+                    "type": "string",
+                    "description": "What to do when the Timer ends, as a short sentence",
+                    "minLength": 1,
+                    "maxLength": MAX_COMMAND_CHARS,
+                },
+                "hours": {"type": "integer", "minimum": 0, "maximum": 24},
+                "minutes": {"type": "integer", "minimum": 0, "maximum": 1440},
+                "seconds": {"type": "integer", "minimum": 0, "maximum": 86400},
+                "name": {"type": "string", "maxLength": MAX_NAME_CHARS},
+            },
+            "required": ["command"],
+            "additionalProperties": False,
+        },
+    ),
+    CodieTool(
+        "timer_control",
+        INTEGRATION,
+        "reversible",
+        description=(
+            "Cancels a running Timer, or tells how much time is left on one or on all of them. "
+            "Set action to cancel or status."
+        ),
+        unavailable=TIMERS_UNAVAILABLE,
+        read_actions=("status",),
+        parameters={
+            "type": "object",
+            "properties": {
+                "action": {"type": "string", "enum": ["cancel", "status"]},
+                "name": {"type": "string", "maxLength": MAX_NAME_CHARS},
+            },
+            "required": ["action"],
+            "additionalProperties": False,
+        },
     ),
 )
 
@@ -198,24 +303,64 @@ def _version(definition: dict[str, Any]) -> str:
     return f"{TOOL_VERSION}-{digest[:8]}"
 
 
-async def build_catalog(hass: HomeAssistant, expected_revision: int) -> dict[str, Any]:
-    """The body for `PUT /data/user/tool-integrations/{id}`."""
+async def _offered_actions(
+    hass: HomeAssistant, tool: CodieTool, api_tools: list[llm.Tool]
+) -> dict[str, str]:
+    """The actions of `tool` whose Assist intent exists, with that intent's name."""
+    return {
+        action: assist_name
+        for action, assist_name in tool.actions.items()
+        if await _assist_tool(hass, assist_name, api_tools) is not None
+    }
+
+
+async def _assist_definition(
+    hass: HomeAssistant,
+    tool: CodieTool,
+    api_tools: list[llm.Tool],
+    serializer: Callable[[Any], Any],
+) -> tuple[str, dict[str, Any]] | None:
+    """The description and parameters of a Tool backed by Assist, or None to leave it out."""
+    actions = await _offered_actions(hass, tool, api_tools)
+    assist_name = next(iter(actions.values())) if actions else tool.assist_name
+    if (assist_tool := await _assist_tool(hass, assist_name, api_tools)) is None:
+        _LOGGER.debug("Assist tool %s is not available; skipping %s", assist_name, tool.name)
+        return None
+    description, parameters = assist_tool.description or "", assist_tool.parameters
+    try:
+        schema = from_probatio(parameters, serializer)
+        for name in tool.hidden:
+            schema["properties"].pop(name, None)
+        if tool.actions:
+            schema["properties"]["action"] = {"type": "string", "enum": list(actions)}
+            schema.setdefault("required", []).append("action")
+    except SchemaLimitError as err:
+        _LOGGER.warning("Skipping tool %s: %s", tool.name, err)
+        return None
+    if tool.scripts_intro and (scripts := _script_names(hass)):
+        description = _list_names(tool.scripts_intro, scripts)
+    return description, schema
+
+
+async def build_catalog(
+    hass: HomeAssistant, expected_revision: int, language: str | None
+) -> dict[str, Any]:
+    """The body for `PUT /data/user/tool-integrations/{id}`.
+
+    `language` is the Codie's AI language, which decides whether the Timer Tools are offered.
+    """
     api_tools, serializer = await _assist_api_tools(hass)
     tools: list[dict[str, Any]] = []
     for tool in TOOLS:
-        if (assist_tool := await _assist_tool(hass, tool.assist_name, api_tools)) is None:
-            _LOGGER.debug(
-                "Assist tool %s is not available; skipping %s", tool.assist_name, tool.name
-            )
+        if tool.parameters is not None:
+            if not timers_supported(hass, language):
+                _LOGGER.debug("Timers are unavailable; skipping %s", tool.name)
+                continue
+            description, schema = "", copy.deepcopy(dict(tool.parameters))
+        elif (found := await _assist_definition(hass, tool, api_tools, serializer)) is None:
             continue
-        description, parameters = assist_tool.description or "", assist_tool.parameters
-        try:
-            schema = from_probatio(parameters, serializer)
-            for name in tool.hidden:
-                schema["properties"].pop(name, None)
-        except SchemaLimitError as err:
-            _LOGGER.warning("Skipping tool %s: %s", tool.name, err)
-            continue
+        else:
+            description, schema = found
         definition = {
             "name": tool.name,
             "description": (tool.description or description)[:MAX_DESCRIPTION_CHARS],
@@ -237,7 +382,7 @@ async def build_catalog(hass: HomeAssistant, expected_revision: int) -> dict[str
 
 
 async def async_register_catalog(
-    hass: HomeAssistant, client: CodieClient, integration_id: str
+    hass: HomeAssistant, client: CodieClient, integration_id: str, language: str | None
 ) -> list[dict[str, Any]]:
     """Create or update the catalog and return the Tools it now holds.
 
@@ -248,7 +393,7 @@ async def async_register_catalog(
         attempt += 1
         current = await client.async_get_tool_integration(integration_id)
         revision = int(current["revision"]) if current else 0
-        catalog = await build_catalog(hass, revision)
+        catalog = await build_catalog(hass, revision, language)
         try:
             await client.async_put_tool_integration(integration_id, catalog)
         except CodieApiError as err:
@@ -263,10 +408,13 @@ async def async_register_catalog(
 class CatalogRegistrar:
     """Keeps the Codie's catalog in step with the Assist tools Home Assistant has."""
 
-    def __init__(self, hass: HomeAssistant, client: CodieClient, integration_id: str) -> None:
+    def __init__(
+        self, hass: HomeAssistant, client: CodieClient, integration_id: str, language: str | None
+    ) -> None:
         self._hass = hass
         self._client = client
         self._integration_id = integration_id
+        self._language = language
         self._tools: list[dict[str, Any]] = []
         self._lock = asyncio.Lock()
 
@@ -274,38 +422,65 @@ class CatalogRegistrar:
         """Register the catalog unconditionally."""
         async with self._lock:
             self._tools = await async_register_catalog(
-                self._hass, self._client, self._integration_id
+                self._hass, self._client, self._integration_id, self._language
             )
 
     async def async_refresh(self) -> bool:
         """Register again if the available Tools changed. Returns whether it did."""
         async with self._lock:
-            if (await build_catalog(self._hass, 0))["tools"] == self._tools:
+            if (await build_catalog(self._hass, 0, self._language))["tools"] == self._tools:
                 return False
             self._tools = await async_register_catalog(
-                self._hass, self._client, self._integration_id
+                self._hass, self._client, self._integration_id, self._language
             )
             return True
 
 
+def find_tool(name: str) -> CodieTool | None:
+    """The Tool called `name`, or None."""
+    return next((tool for tool in TOOLS if tool.name == name), None)
+
+
 async def async_call_tool(
-    hass: HomeAssistant, language: str | None, name: str, arguments: dict[str, Any]
+    hass: HomeAssistant,
+    language: str | None,
+    timers: CodieTimers,
+    name: str,
+    arguments: dict[str, Any],
+    affected: list[str] | None = None,
 ) -> dict[str, Any]:
-    """Run a Tool through Home Assistant's Assist API and return the result data."""
-    tool = next((t for t in TOOLS if t.name == name), None)
+    """Run a Tool and return the result data; Timer Tools go to `timers`, the rest to Assist.
+
+    The ids of the entities the call acted on are added to `affected`, for the record of the call.
+    """
+    tool = find_tool(name)
     if tool is None:
         raise ToolError(ERROR_UNKNOWN_TOOL, f"No tool named {name}")
+    if tool.parameters is not None:
+        if not timers_supported(hass, language):
+            raise ToolError(ERROR_TOOL_UNAVAILABLE, tool.unavailable or f"{name} is unavailable")
+        if name == "timer_start":
+            return await timers.async_start(arguments)
+        return await timers.async_control(arguments)
     context = _llm_context(language)
+    arguments = dict(arguments)
+    assist_name = tool.assist_name_for(arguments)
+    if assist_name is None:
+        raise ToolError(
+            ERROR_INVALID_ARGUMENTS,
+            f"action must be one of {', '.join(tool.actions)}",
+        )
+    arguments.pop("action", None)
     try:
         api_tools, _ = await _assist_api_tools(hass, language)
-        assist_tool = await _assist_tool(hass, tool.assist_name, api_tools)
+        assist_tool = await _assist_tool(hass, assist_name, api_tools)
         if assist_tool is None or (
-            tool.assist_name in _API_NAMES and find_api_tool(api_tools, tool.assist_name) is None
+            assist_name in _API_NAMES and find_api_tool(api_tools, assist_name) is None
         ):
             raise ToolError(
                 ERROR_TOOL_UNAVAILABLE,
                 tool.unavailable
-                or f"{tool.assist_name} is not available; no exposed entity supports it",
+                or f"{assist_name} is not available; no exposed entity supports it",
             )
         raw = await assist_tool.async_call(
             hass, llm.ToolInput(assist_tool.name, _visible(tool, arguments)), context
@@ -332,7 +507,10 @@ async def async_call_tool(
         ) from err
     except HomeAssistantError as err:
         raise ToolError(ERROR_HOME_ASSISTANT, str(err)) from err
-    return _shape_result(raw)
+    data = _shape_result(raw)
+    if affected is not None:
+        affected.extend(_acted_on(raw))
+    return data
 
 
 def _duplicate_name_error(hass: HomeAssistant, err: intent.MatchFailedError) -> ToolError:
@@ -372,23 +550,46 @@ def _area_name(hass: HomeAssistant, entity_id: str) -> str | None:
     return area.name if area else None
 
 
+def _entity_names(hass: HomeAssistant, state: State) -> list[str]:
+    """The names Assist matches an entity by: its aliases, or its entity id when it has none."""
+    entry = er.async_get(hass).async_get(state.entity_id)
+    return intent.async_get_entity_aliases(hass, entry, state=state) or [state.entity_id]
+
+
 def _exposed_names(hass: HomeAssistant) -> str:
     """The names of the entities Assist may use, with their areas, cut to fit an error.
 
     These are the names Assist matches: an entity's aliases, which hold its name unless the
     user removed it, or its entity id when it has none.
     """
-    entities = er.async_get(hass)
     names: list[str] = []
     for state in hass.states.async_all():
         if not async_should_expose(hass, "conversation", state.entity_id):
             continue
         area = _area_name(hass, state.entity_id)
-        entry = entities.async_get(state.entity_id)
-        for name in intent.async_get_entity_aliases(hass, entry, state=state) or [state.entity_id]:
+        for name in _entity_names(hass, state):
             names.append(f"{name} ({area})" if area else name)
     text = ", ".join(sorted(names))
     return text if len(text) <= MAX_NAMES_CHARS else text[:MAX_NAMES_CHARS] + ", ..."
+
+
+def _script_names(hass: HomeAssistant) -> list[str]:
+    """The names Assist matches the exposed scripts by."""
+    return sorted(
+        name
+        for state in hass.states.async_all("script")
+        if async_should_expose(hass, "conversation", state.entity_id)
+        for name in _entity_names(hass, state)
+    )
+
+
+def _list_names(intro: str, names: list[str]) -> str:
+    """`intro` and as many whole `names` as fit a description, then ", ..." if some do not."""
+    for count in range(len(names), 0, -1):
+        text = intro + ", ".join(names[:count]) + (", ..." if count < len(names) else "")
+        if len(text) <= MAX_DESCRIPTION_CHARS:
+            return text
+    return intro + "..."
 
 
 def _visible(tool: CodieTool, arguments: dict[str, Any]) -> dict[str, Any]:
@@ -401,16 +602,20 @@ def failure_data(message: str) -> dict[str, Any]:
     return {"success": False, "error": message[:MAX_ERROR_CHARS]}
 
 
+def _unwrap(raw: Any) -> tuple[dict[str, Any], bool]:
+    """The result dict of an Assist result and whether the tool reported a failure."""
+    if isinstance(raw, dict):
+        return raw, False
+    return raw.data, bool(getattr(raw, "error", False))
+
+
 def _shape_result(raw: Any) -> dict[str, Any]:
     """Reduce an Assist result to the stable shape of `_ASSIST_RESULT_SCHEMA`.
 
     Older Home Assistant returns a dict. 2026.11 returns a `ToolResult` whose `data` is that
     dict, with `error` set when the tool failed.
     """
-    failed = False
-    if not isinstance(raw, dict):
-        failed = bool(getattr(raw, "error", False))
-        raw = raw.data
+    raw, failed = _unwrap(raw)
     if "response_type" in raw:
         return _shape_intent_response(raw)
     if failed or not raw.get("success", "error" not in raw):
@@ -423,6 +628,15 @@ def _shape_result(raw: Any) -> dict[str, Any]:
             data["result"] = _truncate(text, MAX_RESULT_BYTES)
             break
     return data
+
+
+def _acted_on(raw: Any) -> list[str]:
+    """The ids of the entities an intent response says it acted on."""
+    raw, _ = _unwrap(raw)
+    if "response_type" not in raw:
+        return []
+    done = (raw.get("data") or {}).get("success", [])
+    return [t["id"] for t in done if t.get("type") == "entity" and t.get("id")]
 
 
 def _shape_intent_response(raw: dict[str, Any]) -> dict[str, Any]:
