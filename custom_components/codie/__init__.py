@@ -112,9 +112,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: CodieConfigEntry) -> boo
     async def announce(message: str) -> None:
         await async_announce(client, message, partial(entry.async_start_reauth, hass))
 
-    timers = CodieTimers(hass, timers_store(hass, entry.entry_id), language, announce)
-    await timers.async_load()
-    # The Tools pass the device's id to Assist, so a request that names no Area acts on its Area.
+    # The Tools and Timers pass the device's id to Assist, so a request or Command that names no
+    # Area acts on the Codie's.
     device = dr.async_get(hass).async_get_or_create(
         config_entry_id=entry.entry_id,
         identifiers={(DOMAIN, entry.unique_id)},
@@ -122,6 +121,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: CodieConfigEntry) -> boo
         model="Codie",
         name=entry.title,
     )
+    timers = CodieTimers(hass, timers_store(hass, entry.entry_id), language, device.id, announce)
+    await timers.async_load()
     recorder = ToolRecorder(
         hass, entry, partial(async_call_tool, hass, language, device.id, timers)
     )

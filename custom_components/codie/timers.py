@@ -132,11 +132,14 @@ class CodieTimers:
         hass: HomeAssistant,
         store: Store[dict[str, Any]],
         language: str | None,
+        device_id: str | None,
         announce: Callable[[str], Awaitable[None]],
     ) -> None:
         self._hass = hass
         self._store = store
         self._language = language
+        # The Codie's device: a Command that names no Area acts on the Codie's.
+        self._device_id = device_id
         # Has the Character speak a message at once.
         self._announce = announce
         self._timers: dict[str, _Timer] = {}
@@ -289,6 +292,7 @@ class CodieTimers:
                 context=Context(),
                 language=self._language,
                 agent_id=HOME_ASSISTANT_AGENT,
+                device_id=self._device_id,
             )
         except Exception as err:
             await self._async_report_failure(timer, str(err) or type(err).__name__)
@@ -319,7 +323,7 @@ class CodieTimers:
             text=command,
             context=Context(),
             conversation_id=None,
-            device_id=None,
+            device_id=self._device_id,
             satellite_id=None,
             language=self._language or "",
             agent_id=HOME_ASSISTANT_AGENT,

@@ -15,6 +15,8 @@ from homeassistant.components.conversation.default_agent import DefaultAgent
 from homeassistant.components.homeassistant.exposed_entities import async_expose_entity
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
+from homeassistant.helpers import area_registry as ar
+from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import intent
 from homeassistant.setup import async_setup_component
 from homeassistant.util import dt as dt_util
@@ -25,7 +27,7 @@ from custom_components.codie.errors import ToolError
 from custom_components.codie.timers import CodieTimers, timers_store
 
 from .fake_codie import FakeCodie
-from .test_tool_list import add_entity, setup_assist
+from .test_tool_list import add_entity, put_in_area, setup_assist
 from .test_tools import INTEGRATION_ID, make_entry, setup, wait_connected
 
 
@@ -101,6 +103,28 @@ async def test_a_timer_runs_its_command_when_it_ends(hass: HomeAssistant, codie:
     (lamp,) = turned_off
     assert lamp.data["entity_id"] == ["light.kitchen_lamp"]
     assert not codie.utterances
+
+
+async def test_a_command_that_names_no_area_acts_on_the_codies_area(
+    hass: HomeAssistant, codie: FakeCodie
+) -> None:
+    # "Turn off the lights in 20 minutes", said to a Codie in the Office.
+    await setup_assist(hass)
+    put_in_area(hass, add_entity(hass, "light", "desk lamp", True), "Office")
+    put_in_area(hass, add_entity(hass, "light", "pendant", True), "Kitchen")
+    entry = await setup(hass, codie)
+    await wait_connected(hass, codie, True)
+    devices = dr.async_get(hass)
+    (device,) = dr.async_entries_for_config_entry(devices, entry.entry_id)
+    office = ar.async_get(hass).async_get_or_create("Office")
+    devices.async_update_device(device.id, area_id=office.id)
+    turned_off = async_mock_service(hass, "light", "turn_off")
+
+    result = await call(codie, "timer_start", command="turn off the lights", minutes=20)
+    await elapse(hass, minutes=21)
+
+    assert result["status"] == "succeeded"
+    assert sorted(e for c in turned_off for e in c.data["entity_id"]) == ["light.desk_lamp"]
 
 
 async def test_a_command_that_fails_is_announced(hass: HomeAssistant, codie: FakeCodie) -> None:
@@ -314,7 +338,7 @@ async def test_a_start_that_ends_after_unload_schedules_and_saves_nothing(
     add_entity(hass, "light", "kitchen lamp", True)
     turned_off = async_mock_service(hass, "light", "turn_off")
     store = timers_store(hass, "gone")
-    timers = CodieTimers(hass, store, "en", AsyncMock())
+    timers = CodieTimers(hass, store, "en", None, AsyncMock())
     checking = asyncio.Event()
     release = asyncio.Event()
 
