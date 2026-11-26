@@ -1,4 +1,4 @@
-"""Describes the Tool calls the Character made, for the logbook."""
+"""Describes the Tool calls the Character made and the Announcements it said, for the logbook."""
 
 from __future__ import annotations
 
@@ -13,6 +13,12 @@ from homeassistant.components.logbook import (
 from homeassistant.core import Event, HomeAssistant, callback
 from homeassistant.helpers import device_registry as dr
 
+from .announce import (
+    EVENT_ANNOUNCEMENT_FINISHED,
+    OUTCOME_FALLBACK,
+    OUTCOME_IN_CHARACTER,
+    OUTCOME_INTERRUPTED,
+)
 from .const import DOMAIN
 from .tool_events import EVENT_TOOL_LOGGED
 
@@ -50,7 +56,7 @@ def async_describe_events(
     hass: HomeAssistant,
     async_describe_event: Callable[[str, str, Callable[[Event[Any]], dict[str, Any]]], None],
 ) -> None:
-    """Teach the logbook to describe the Tool calls."""
+    """Teach the logbook to describe the Tool calls and the Interpreted announcements."""
 
     @callback
     def describe(event: Event[Any]) -> dict[str, Any]:
@@ -77,6 +83,26 @@ def async_describe_events(
         return described
 
     async_describe_event(DOMAIN, EVENT_TOOL_LOGGED, describe)
+
+    @callback
+    def describe_announcement(event: Event[Any]) -> dict[str, Any]:
+        data = event.data
+        device = dr.async_get(hass).async_get(data["device_id"]) if data["device_id"] else None
+        said = data["message"]
+        if data["outcome"] == OUTCOME_IN_CHARACTER:
+            message = f'said "{said}" in its own words: "{data["reply"]}"'
+        elif data["outcome"] == OUTCOME_FALLBACK:
+            message = f'could not say "{said}" in its own words and said it as given'
+        elif data["outcome"] == OUTCOME_INTERRUPTED:
+            message = f'was interrupted before saying "{said}" in its own words'
+        else:
+            message = f'could not say "{said}" in its own words or as given'
+        return {
+            LOGBOOK_ENTRY_NAME: (device and (device.name_by_user or device.name)) or "Codie",
+            LOGBOOK_ENTRY_MESSAGE: message,
+        }
+
+    async_describe_event(DOMAIN, EVENT_ANNOUNCEMENT_FINISHED, describe_announcement)
 
 
 def _phrase_key(tool: str, arguments: dict[str, Any]) -> str:

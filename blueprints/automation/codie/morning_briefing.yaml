@@ -3,6 +3,7 @@ blueprint:
   description: >-
     Each morning the Character gives today's weather and, if you pick calendars, today's
     events, in a Queued announcement: once it is idle, and remembered as something it said.
+    Or, if you turn on "In character", in its own words, at once.
     It briefs at the chosen time or, if you pick presence sensors, the first time one of them
     detects someone between the chosen time and the latest time. The briefing is kept within
     the 200 characters a Queued announcement allows by naming fewer events.
@@ -71,6 +72,15 @@ blueprint:
       default: "12:00:00"
       selector:
         time:
+    in_character:
+      name: In character
+      description: >-
+        Let the Character say it in its own words and personality, instead of word for word. It
+        starts after about 8 seconds, cuts off whatever the Character is doing, and spends some
+        of the Codie's token quota. Nothing is saved to the chat history.
+      default: false
+      selector:
+        boolean:
 
 mode: single
 
@@ -79,6 +89,7 @@ variables:
   calendars: !input calendars
   greeting: !input greeting
   presence_sensors: !input presence_sensors
+  in_character: !input in_character
   # Declared here so the response from inside the `if` below is still set after it.
   calendar_response: {}
 
@@ -179,4 +190,6 @@ actions:
     target: !input codie
     data:
       message: "{{ message }}"
-      queue: true
+      in_character: !input in_character
+      # An announcement in character is always said at once, so it cannot be queued.
+      queue: "{{ not in_character }}"

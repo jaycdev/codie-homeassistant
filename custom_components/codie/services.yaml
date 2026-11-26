@@ -17,3 +17,18 @@ announce:
       default: false
       selector:
         boolean:
+    in_character:
+      required: false
+      default: false
+      selector:
+        boolean:
+    instructions:
+      required: false
+      example: Sound urgent
+      selector:
+        text:
+    remember:
+      required: false
+      default: false
+      selector:
+        boolean:

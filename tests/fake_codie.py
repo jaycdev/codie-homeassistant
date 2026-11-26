@@ -144,6 +144,19 @@ class FakeCodie:
     # Queued announcements, and the status to refuse them with (503: speech service not ready).
     agent_results: list[dict[str, Any]] = field(default_factory=list)
     agent_result_error: tuple[int, str] | None = None
+    # Chat turns as posted, and the status to refuse one with, as when the Codie is asleep or out of
+    # tokens. A turn reports `chat_turn_polls` unfinished reads (state "thinking") and then
+    # ends as `chat_turn_outcome` says: its state, `assistant_text` and `error`. With
+    # `chat_turn_polls` None it never ends.
+    chat_turns: list[dict[str, Any]] = field(default_factory=list)
+    chat_turn_error: tuple[int, str] | None = None
+    chat_turn_polls: int | None = 1
+    chat_turn_outcome: dict[str, Any] = field(
+        default_factory=lambda: {"state": "completed", "assistant_text": "The laundry is done!"}
+    )
+    # The turns the integration cancelled.
+    cancelled_turns: list[str] = field(default_factory=list)
+    _chat_turn_reads: dict[str, int] = field(default_factory=dict)
     # Settings. Voice volume belongs to the Slot; the others are one value for the whole Codie.
     voice_volumes: dict[int, int] = field(
         default_factory=lambda: {1: 10, 2: 20, 3: 30, 4: 40, 5: 50}
@@ -241,6 +254,11 @@ class FakeCodie:
         app.router.add_post(f"{API}/data/user/light-master-switch", self._lights_post)
         app.router.add_post(f"{API}/data/user/tts/utterances", self._utterance)
         app.router.add_post(f"{API}/data/user/agent/results", self._agent_result)
+        app.router.add_post(f"{API}/data/user/chat/turns", self._chat_turn_post)
+        app.router.add_get(f"{API}/data/user/chat/turns/{{turn_id}}", self._chat_turn_get)
+        app.router.add_post(
+            f"{API}/data/user/chat/turns/{{turn_id}}/cancel", self._chat_turn_cancel
+        )
         app.router.add_post(f"{API}/data/user/echo", self._echo)
         app.router.add_get(f"{API}/data/user/name/{{name}}", self._name)
         self._server = TestServer(app, host="127.0.0.1")
@@ -816,6 +834,50 @@ class FakeCodie:
             return _error(*self.agent_result_error)
         self.agent_results.append(body)
         return web.json_response({"success": True}, status=202)
+
+    async def _chat_turn_post(self, request: web.Request) -> web.Response:
+        body = await request.json()
+        required = {"request_id", "slot", "input", "output"}
+        optional = {"interrupt", "retention", "tools"}
+        if not required <= set(body) <= required | optional:
+            return _error(400, "INVALID_REQUEST")
+        try:
+            uuid.UUID(body["request_id"])
+        except ValueError:
+            return _error(400, "INVALID_REQUEST")
+        text = body["input"].get("text")
+        if body["input"].get("type") != "text" or not isinstance(text, str):
+            return _error(400, "INVALID_REQUEST")
+        if not 1 <= len(text.strip()) <= 16000:
+            return _error(400, "INVALID_REQUEST")
+        if self.chat_turn_error is not None:
+            return _error(*self.chat_turn_error)
+        if body["slot"] != self.slot:
+            return _error(409, "SLOT_MISMATCH")
+        self.chat_turns.append(body)
+        turn_id = f"turn-{len(self.chat_turns)}"
+        self._chat_turn_reads[turn_id] = 0
+        return web.json_response(
+            {"success": True, "data": {"turn_id": turn_id, "state": "queued"}}, status=202
+        )
+
+    async def _chat_turn_get(self, request: web.Request) -> web.Response:
+        turn_id = request.match_info["turn_id"]
+        if turn_id not in self._chat_turn_reads:
+            return _error(404, "NOT_FOUND")
+        self._chat_turn_reads[turn_id] += 1
+        if self.chat_turn_polls is None or self._chat_turn_reads[turn_id] <= self.chat_turn_polls:
+            snapshot = {"turn_id": turn_id, "state": "thinking"}
+        else:
+            snapshot = {"turn_id": turn_id, **self.chat_turn_outcome}
+        return web.json_response({"success": True, "data": snapshot})
+
+    async def _chat_turn_cancel(self, request: web.Request) -> web.Response:
+        turn_id = request.match_info["turn_id"]
+        if turn_id not in self._chat_turn_reads:
+            return _error(404, "NOT_FOUND")
+        self.cancelled_turns.append(turn_id)
+        return web.json_response({"success": True, "data": {"turn_id": turn_id}})
 
     async def _echo(self, request: web.Request) -> web.Response:
         """Harness-only signed POST, so tests can exercise bodies."""

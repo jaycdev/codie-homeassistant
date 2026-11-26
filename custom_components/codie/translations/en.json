@@ -62,6 +62,9 @@
     "notify": {
       "announce": {
         "name": "Announce"
+      },
+      "announce_in_character": {
+        "name": "Announce in character"
       }
     },
     "number": {
@@ -105,7 +108,7 @@
   "services": {
     "announce": {
       "name": "Announce",
-      "description": "Makes the Character speak a message.",
+      "description": "Makes the Character speak a message, word for word or in its own words.",
       "fields": {
         "message": {
           "name": "Message",
@@ -113,7 +116,19 @@
         },
         "queue": {
           "name": "Queue",
-          "description": "Wait until the Character is idle, then speak the message and save it to its chat history. Up to 200 characters. Leave off to speak at once, cutting off whatever the Character is doing."
+          "description": "Wait until the Character is idle, then speak the message and save it to its chat history. Up to 200 characters. Leave off to speak at once, cutting off whatever the Character is doing. Cannot be combined with In character."
+        },
+        "in_character": {
+          "name": "In character",
+          "description": "Let the Character say the message in its own words and personality, as a short announcement, instead of word for word. It starts after about 8 seconds, cuts off whatever the Character is doing, and spends some of the Codie's token quota. If the Character cannot say it, the message is spoken as given. Up to 15000 characters."
+        },
+        "instructions": {
+          "name": "Instructions",
+          "description": "How the Character should say it, such as \"sound urgent\" or \"keep it under 10 words\". Up to 500 characters. Needs In character."
+        },
+        "remember": {
+          "name": "Remember",
+          "description": "Save the exchange to the Character's chat history, where it shows as if you had said the instruction. Leave off to save nothing. Needs In character."
         }
       }
     }
@@ -121,6 +136,15 @@
   "exceptions": {
     "announcement_length": {
       "message": "The message must have between 1 and {max} characters."
+    },
+    "instructions_length": {
+      "message": "The instructions must have at most {max} characters."
+    },
+    "in_character_required": {
+      "message": "Instructions and Remember only work together with In character."
+    },
+    "in_character_not_queued": {
+      "message": "An announcement in character cannot be queued: it is always said at once."
     },
     "codie_target_missing": {
       "message": "Choose a Codie as the target: add a target and pick the Codie device or its Announce entity."

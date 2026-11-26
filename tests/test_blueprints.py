@@ -113,7 +113,9 @@ async def test_doorbell_ignores_a_binary_sensor_starting_up_on(
 # Appliance finished
 
 
-async def finish_appliance(hass: HomeAssistant, from_state: str, minutes: int) -> None:
+async def finish_appliance(
+    hass: HomeAssistant, from_state: str, minutes: int, **inputs: Any
+) -> None:
     """Run the appliance, drop its power below 5 W, and let `minutes` pass."""
     hass.states.async_set("sensor.washer_power", from_state)
     await use_blueprint(
@@ -122,6 +124,7 @@ async def finish_appliance(hass: HomeAssistant, from_state: str, minutes: int) -
         codie=CODIE,
         power_sensor="sensor.washer_power",
         message="The washing is done",
+        **inputs,
     )
     hass.states.async_set("sensor.washer_power", "1.5")
     await hass.async_block_till_done()
@@ -135,7 +138,27 @@ async def test_appliance_finished_queues_once_power_stays_low(
     await finish_appliance(hass, "450", minutes=6)
 
     assert announced == [
-        {"device_id": ["codie_device"], "message": "The washing is done", "queue": True}
+        {
+            "device_id": ["codie_device"],
+            "message": "The washing is done",
+            "in_character": False,
+            "queue": True,
+        }
+    ]
+
+
+async def test_appliance_finished_can_say_it_in_character(
+    hass: HomeAssistant, announced: list[dict[str, Any]]
+) -> None:
+    await finish_appliance(hass, "450", minutes=6, in_character=True)
+
+    assert announced == [
+        {
+            "device_id": ["codie_device"],
+            "message": "The washing is done",
+            "in_character": True,
+            "queue": False,
+        }
     ]
 
 
@@ -207,7 +230,7 @@ async def move_to(hass: HomeAssistant, freezer: FrozenDateTimeFactory, time: str
 
 
 def messages(announced: list[dict[str, Any]]) -> list[str]:
-    assert all(call["queue"] for call in announced)
+    assert all(call["queue"] and not call["in_character"] for call in announced)
     return [call["message"] for call in announced]
 
 
@@ -226,6 +249,23 @@ async def test_morning_briefing_at_the_chosen_time(
         "Good morning. Today will be partly cloudy, with a high of 24 and a low of 15 degrees. "
         "You have 2 events today: Bin day, all day, and Dentist at 09:00."
     ]
+
+
+async def test_morning_briefing_can_say_it_in_character(
+    hass: HomeAssistant,
+    freezer: FrozenDateTimeFactory,
+    announced: list[dict[str, Any]],
+    calendar_events: list[dict[str, Any]],
+) -> None:
+    await move_to(hass, freezer, "06:00:00")
+    await use_morning_briefing(hass, calendars=["calendar.family"], in_character=True)
+
+    await move_to(hass, freezer, "07:00:00")
+
+    (call,) = announced
+    assert call["in_character"] is True
+    assert call["queue"] is False
+    assert call["message"].startswith("Good morning. Today will be partly cloudy")
 
 
 async def test_morning_briefing_with_one_event_or_none(
@@ -353,6 +393,19 @@ def test_blueprint_offers_the_same_codies_as_announce(path: Path) -> None:
     assert blueprint["source_url"] == (
         f"https://github.com/jaycdev/codie-homeassistant/blob/main/blueprints/automation/codie/{path.name}"
     )
+
+
+@pytest.mark.parametrize("name", ["appliance_finished", "morning_briefing"])
+def test_blueprint_offers_in_character_off_by_default(name: str) -> None:
+    """Existing automations sound the same after an update; the doorbell is too slow for it."""
+    inputs = load_yaml_dict(BLUEPRINTS / f"{name}.yaml")["blueprint"]["input"]
+    assert inputs["in_character"]["default"] is False
+    assert inputs["in_character"]["selector"] == {"boolean": None}
+
+
+def test_the_doorbell_blueprint_has_no_in_character_input() -> None:
+    inputs = load_yaml_dict(BLUEPRINTS / "doorbell.yaml")["blueprint"]["input"]
+    assert "in_character" not in inputs
 
 
 @pytest.mark.parametrize("path", sorted(BLUEPRINTS.glob("*.yaml")), ids=lambda path: path.stem)
