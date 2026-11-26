@@ -1,5 +1,25 @@
 # Changelog
 
+## [0.3.0](https://github.com/jaycdev/codie-homeassistant/compare/v0.2.0...v0.3.0) (2026-11-26)
+
+
+### Features
+
+* add a diagnostics download ([#23](https://github.com/jaycdev/codie-homeassistant/issues/23)) ([dfeb2f6](https://github.com/jaycdev/codie-homeassistant/commit/dfeb2f6406080c00284b4445fd40ad8c5ac77cd9))
+* announce a failed Timer Command in the Character's language ([#24](https://github.com/jaycdev/codie-homeassistant/issues/24)) ([67a6c43](https://github.com/jaycdev/codie-homeassistant/commit/67a6c434a817c04bdad7ef3928612ec141d02007))
+* combine media Tools, add command Timers, record Tool calls, and add a Music player ([#18](https://github.com/jaycdev/codie-homeassistant/issues/18)) ([6a1ec94](https://github.com/jaycdev/codie-homeassistant/commit/6a1ec94f35747e51a3692287b95d8a25213b4ffa))
+* let the Character say an Announcement in its own words ([#31](https://github.com/jaycdev/codie-homeassistant/issues/31)) ([c5b8ab5](https://github.com/jaycdev/codie-homeassistant/commit/c5b8ab548e9c7ef35a1f63d487edfe902401e16e)), closes [#30](https://github.com/jaycdev/codie-homeassistant/issues/30)
+* raise repair issues for clock skew and missing Tools ([#25](https://github.com/jaycdev/codie-homeassistant/issues/25)) ([ec30fe3](https://github.com/jaycdev/codie-homeassistant/commit/ec30fe3972b8472c69563ad166e9fd516016413b))
+* retry a failed Tool refresh and clear a refusal the Codie no longer holds ([#29](https://github.com/jaycdev/codie-homeassistant/issues/29)) ([0c6ac7d](https://github.com/jaycdev/codie-homeassistant/commit/0c6ac7ddda69ca002b15f5e72c6d2b4b91924123)), closes [#12](https://github.com/jaycdev/codie-homeassistant/issues/12)
+* ship blueprints for a doorbell, a finished appliance and a morning briefing ([#20](https://github.com/jaycdev/codie-homeassistant/issues/20)) ([30e4a04](https://github.com/jaycdev/codie-homeassistant/commit/30e4a04a3dcac684562bc3cd9b7ffae698547947)), closes [#17](https://github.com/jaycdev/codie-homeassistant/issues/17)
+* show the active Character and let Home Assistant switch it ([#19](https://github.com/jaycdev/codie-homeassistant/issues/19)) ([da47b7b](https://github.com/jaycdev/codie-homeassistant/commit/da47b7b39d9b84db909de11e9320316b5f253955))
+* use the Codie's Area for requests that don't name a room ([#26](https://github.com/jaycdev/codie-homeassistant/issues/26)) ([e655347](https://github.com/jaycdev/codie-homeassistant/commit/e6553477585c0c29142deaed56d396a6f3574957))
+
+
+### Bug Fixes
+
+* don't retry a refused catalog, and log a long outage once ([0c6ac7d](https://github.com/jaycdev/codie-homeassistant/commit/0c6ac7ddda69ca002b15f5e72c6d2b4b91924123)), closes [#12](https://github.com/jaycdev/codie-homeassistant/issues/12)
+
 ## [0.2.0](https://github.com/jaycdev/codie-homeassistant/compare/v0.1.0...v0.2.0) (2026-11-24)
 
 
