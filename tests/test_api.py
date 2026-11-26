@@ -301,3 +301,44 @@ async def test_reply_missing_expected_fields_raises_a_response_error(
 
     with pytest.raises(CodieResponseError):
         await CodieClient(session, fake_codie.host, fake_codie.port).async_pair_request()
+
+
+async def test_a_chat_turn_is_sent_and_read(session: ClientSession, fake_codie: FakeCodie) -> None:
+    client = make_client(session, fake_codie)
+    fake_codie.chat_turn_polls = 0
+    fake_codie.chat_turn_outcome = {
+        "state": "failed",
+        "assistant_text": "  ",
+        "error": {"code": "TURN_TIMEOUT", "message": "slow"},
+    }
+
+    started = await client.async_post_chat_turn(
+        "3f743580-bd45-4c24-96c0-61a67ac5f741", 3, "Hello", remember=True
+    )
+    read = await client.async_get_chat_turn(started.turn_id)
+
+    assert fake_codie.chat_turns == [
+        {
+            "request_id": "3f743580-bd45-4c24-96c0-61a67ac5f741",
+            "slot": 3,
+            "input": {"type": "text", "text": "Hello"},
+            "output": {"speech": "device"},
+            "interrupt": True,
+            "retention": "chat",
+            "tools": "none",
+        }
+    ]
+    assert not started.finished
+    assert read.finished
+    assert read.state == "failed"
+    assert read.assistant_text is None
+    assert read.error_code == "TURN_TIMEOUT"
+
+
+async def test_a_chat_turn_without_an_id_is_a_response_error(
+    session: ClientSession, fake_codie: FakeCodie
+) -> None:
+    fake_codie.overrides["/data/user/chat/turns/x"] = (200, b'{"success":true,"data":{}}')
+
+    with pytest.raises(CodieResponseError):
+        await make_client(session, fake_codie).async_get_chat_turn("x")

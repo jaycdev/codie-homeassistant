@@ -62,8 +62,12 @@ An action Home Assistant offers to the Character's model, which the model may ca
 _Avoid_: function, skill, command
 
 **Announcement**:
-Text Home Assistant sends for the Character to speak as-is, without the Character's model deciding what to say. By default it is immediate: it cuts off whatever the Character is doing and is not remembered by the Character.
+Text Home Assistant sends for the Character to speak. Unless it is an Interpreted announcement, the Character speaks it as-is, without its model deciding what to say. By default it is immediate: it cuts off whatever the Character is doing and is not remembered by the Character.
 _Avoid_: notification, TTS message
 
 **Queued announcement**:
 A short Announcement that waits until the Character is idle and is remembered as something the Character said.
+
+**Interpreted announcement**:
+An immediate Announcement the Character says in its own words and personality ("Washing machine is finished" becomes "The laundry's done, go get it quick!"), optionally in a manner Home Assistant asks for, such as urgent or brief. It is remembered only when Home Assistant asks, and if the Character cannot say it, the original text is spoken as-is. Shown as "in character" to users.
+_Avoid_: rephrased announcement, AI announcement

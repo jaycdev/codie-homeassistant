@@ -32,6 +32,7 @@ The Codie is added as a device with these entities:
 
 - **Connected** (binary sensor): on while Home Assistant is connected to the Codie and serving its Tools. While it is off, new conversations with the Character have no home-control Tools.
 - **Announce** (notify): see [Announcements](#announcements).
+- **Announce in character** (notify): the Character says the message in its own words. See [Interpreted announcements](#interpreted-announcements).
 - **Active Character** (sensor): the name of the Character in the active Slot. Its `slot` attribute is the Slot's number.
 - **Character** (select): one option per Slot, named after its Character, and the active one selected. Choosing another switches the Codie to that Slot; the Codie then loads the Character, which can take a moment to show. When two Slots hold Characters with the same name, the options add the Slot (`Aiko (Slot 2)`), and a Slot whose Character has no name is shown as `Slot 4`. Both are unavailable while the Codie does not report its Characters, and so is Voice volume, which is read with them.
 - **Voice volume** (number, 0–100): how loud the Character speaks, Announcements included. It follows the active Slot: it shows and sets the volume of the Character in that Slot, so it changes when you switch Characters, from the Codie or with the Character select.
@@ -147,7 +148,7 @@ Remember the [warning above](#code27-codie-for-home-assistant): anything exposed
 
 ## Announcements
 
-An Announcement is text the Character speaks exactly as given, without its model deciding what to say. There are two kinds.
+An Announcement is text the Character speaks. Unless it is an [Interpreted announcement](#interpreted-announcements), it speaks it exactly as given, without its model deciding what to say. There are two kinds of that.
 
 | | Announcement | Queued announcement |
 | --- | --- | --- |
@@ -181,15 +182,65 @@ The Character speaks the text in whatever language it is written. Nothing is tra
 
 The action returns as soon as the Codie accepts the message. It does not wait for the Character to finish speaking. The Codie's screen is never woken: if the Codie is asleep or locked, the action fails with an error that names the reason. Wake the Codie and try again.
 
+### Interpreted announcements
+
+An Interpreted announcement is an immediate Announcement that the Character says in its own words and personality: "Washing machine is finished" becomes something like "The laundry's done, go get it quick!", in the Character's own language. Send one with `codie.announce` and `in_character: true`, or with the **Announce in character** entity, which always uses the default wording and ignores the `title`.
+
+```yaml
+action: codie.announce
+target:
+  device_id: YOUR_CODIE_DEVICE_ID  # pick the Codie in the action editor
+data:
+  message: The washing machine is finished
+  in_character: true
+  instructions: Sound urgent  # optional, up to 500 characters
+  remember: false             # optional, see below
+```
+
+- `in_character`: have the Character say the message in its own words. Without it, the Announcement is spoken as given.
+- `instructions`: how to say it, such as "sound urgent", "relaxed" or "keep it under 10 words". Up to 500 characters. Fails without `in_character`.
+- `remember`: save it to the Character's chat history. Off by default, so nothing is saved. Fails without `in_character`.
+
+The message is sent to the Character as a chat turn, wrapped in a fixed English request (`Tell me this in your own words, as a short announcement. <instructions>. The message: <message>`) with the Character's Tools turned off, so the message can never make it act on your home. Things to know:
+
+- **It is slower.** The Character starts speaking after about 8 seconds, so don't use it where timing matters, like a doorbell.
+- **It cuts in.** Like an immediate Announcement, it cuts off whatever the Character is doing. It can't be queued: `in_character` together with `queue: true` fails.
+- **It uses the Codie's token quota.** Each one is a conversation turn. If the quota is used up, the Character can't say it.
+- **Length.** The message can be 1–15000 characters. Nothing is ever cut short: a longer message is rejected.
+- **Chat history.** With `remember`, the turn is saved as a conversation, so the chat history shows you saying the request line ("Tell me this in your own words...") followed by the Character's reply. The Codie can't save the reply alone. Without `remember`, nothing is saved, though the Character still draws on its history and memory when it answers.
+- **If the Character can't say it,** the original text is spoken as a plain immediate Announcement, and a warning is written to the log. This covers an exhausted token quota, a timeout, an empty reply, or the Codie not finishing within two minutes (the turn is then stopped first). It does not apply when something else takes over the Codie, such as another Announcement or you speaking to it: nothing more is spoken then. The fallback is never remembered.
+- **Home Assistant can't check the reply before it is spoken.** It only sees it afterwards.
+
+The action returns as soon as the Codie accepts the turn, with the same errors as an Announcement if the Codie is asleep or locked, not ready or unreachable. Home Assistant follows the turn in the background, which stops if the integration is unloaded.
+
+When an Interpreted announcement is over, the `codie_announcement_finished` event fires and the logbook shows what the Character said. Plain Announcements fire nothing.
+
+The event has these data:
+
+- `device_id`: the Codie's device ID.
+- `message`: the original message.
+- `reply`: what the Character said, or `null` if it said nothing.
+- `outcome`: how it went. `in_character`: the Character said it in its own words. `fallback`: the Character couldn't, so the original message was spoken as given. `not_spoken`: the Character couldn't, and the original message couldn't be spoken either (for example the Codie was locked or rejected Home Assistant). `interrupted`: something else took over the Codie, such as another Announcement or you speaking to it, so nothing more was spoken.
+
+For example, to be told when the Character didn't say it in its own words:
+
+```yaml
+triggers:
+  - trigger: event
+    event_type: codie_announcement_finished
+conditions:
+  - "{{ trigger.event.data.outcome != 'in_character' }}"
+```
+
 ### Blueprints
 
-These blueprints make automations for common Announcements. Import one, then create an automation from it under **Settings → Automations & scenes → Blueprints**, and pick your Codie and sensors.
+These blueprints make automations for common Announcements. Import one, then create an automation from it under **Settings → Automations & scenes → Blueprints**, and pick your Codie and sensors. The "In character" input of the Appliance finished and Morning briefing blueprints is off by default, so existing automations sound the same after an update. The Doorbell blueprint has none, because an Interpreted announcement is too slow for it.
 
 | Blueprint | What it does | |
 | --- | --- | --- |
 | Doorbell | An Announcement the moment a doorbell binary sensor turns on, or a doorbell event entity is pressed. | [![Import blueprint](https://my.home-assistant.io/badges/blueprint_import.svg)](https://my.home-assistant.io/redirect/blueprint_import/?blueprint_url=https%3A%2F%2Fgithub.com%2Fjaycdev%2Fcodie-homeassistant%2Fblob%2Fmain%2Fblueprints%2Fautomation%2Fcodie%2Fdoorbell.yaml) |
-| Appliance finished | A Queued announcement once a power sensor stays below a threshold for a while, such as a washing machine or dishwasher at the end of its cycle. A sensor coming back after a restart doesn't count as finishing. | [![Import blueprint](https://my.home-assistant.io/badges/blueprint_import.svg)](https://my.home-assistant.io/redirect/blueprint_import/?blueprint_url=https%3A%2F%2Fgithub.com%2Fjaycdev%2Fcodie-homeassistant%2Fblob%2Fmain%2Fblueprints%2Fautomation%2Fcodie%2Fappliance_finished.yaml) |
-| Morning briefing | A Queued announcement with today's weather and, optionally, today's calendar events. Given at a chosen time, or at the first presence detected after it. It names fewer events when needed to stay within 200 characters. | [![Import blueprint](https://my.home-assistant.io/badges/blueprint_import.svg)](https://my.home-assistant.io/redirect/blueprint_import/?blueprint_url=https%3A%2F%2Fgithub.com%2Fjaycdev%2Fcodie-homeassistant%2Fblob%2Fmain%2Fblueprints%2Fautomation%2Fcodie%2Fmorning_briefing.yaml) |
+| Appliance finished | A Queued announcement (or, with the "In character" input on, an Interpreted announcement) once a power sensor stays below a threshold for a while, such as a washing machine or dishwasher at the end of its cycle. A sensor coming back after a restart doesn't count as finishing. | [![Import blueprint](https://my.home-assistant.io/badges/blueprint_import.svg)](https://my.home-assistant.io/redirect/blueprint_import/?blueprint_url=https%3A%2F%2Fgithub.com%2Fjaycdev%2Fcodie-homeassistant%2Fblob%2Fmain%2Fblueprints%2Fautomation%2Fcodie%2Fappliance_finished.yaml) |
+| Morning briefing | A Queued announcement (or, with the "In character" input on, an Interpreted announcement) with today's weather and, optionally, today's calendar events. Given at a chosen time, or at the first presence detected after it. It names fewer events when needed to stay within 200 characters. | [![Import blueprint](https://my.home-assistant.io/badges/blueprint_import.svg)](https://my.home-assistant.io/redirect/blueprint_import/?blueprint_url=https%3A%2F%2Fgithub.com%2Fjaycdev%2Fcodie-homeassistant%2Fblob%2Fmain%2Fblueprints%2Fautomation%2Fcodie%2Fmorning_briefing.yaml) |
 
 ## Troubleshooting
 

@@ -52,6 +52,9 @@ CLOCK_SKEW_CODE = "REQUEST_EXPIRED"
 # the clock rather than to the credentials.
 CLOCK_TOLERANCE_S = 300
 
+# The states in which a conversation turn has ended, whatever the outcome.
+CHAT_TURN_FINISHED_STATES = frozenset({"completed", "failed", "cancelled"})
+
 PAYLOAD_EMPTY = "empty"
 PAYLOAD_JSON = "json"
 
@@ -188,6 +191,24 @@ class CodieLightSwitches:
     music_side_lights: bool | None
 
 
+@dataclass(frozen=True)
+class CodieChatTurn:
+    """A conversation turn as the Codie reports it."""
+
+    turn_id: str
+    # queued, starting, thinking, responding, completed, failed, cancelled and so on.
+    state: str
+    # What the Character answered; None until it has, or if it said nothing.
+    assistant_text: str | None
+    # The code of the error a failed turn ended with; None if it has none.
+    error_code: str | None
+
+    @property
+    def finished(self) -> bool:
+        """Whether the turn ended, however it ended."""
+        return self.state in CHAT_TURN_FINISHED_STATES
+
+
 def _as_dict(data: Any) -> dict[str, Any]:
     """Require the reply's `data` to be an object."""
     if not isinstance(data, dict):
@@ -213,6 +234,20 @@ def _flag(data: dict[str, Any], key: str) -> bool | None:
     """A boolean from `data`, or None if it is missing or not a boolean."""
     value = data.get(key)
     return value if isinstance(value, bool) else None
+
+
+def _chat_turn(data: dict[str, Any]) -> CodieChatTurn:
+    """A `CodieChatTurn` from a turn snapshot; raises `CodieResponseError` if it has no ID."""
+    turn_id = _text(data, "turn_id")
+    if turn_id is None:
+        raise CodieResponseError("Reply has no turn_id")
+    error = data.get("error")
+    return CodieChatTurn(
+        turn_id=turn_id,
+        state=_text(data, "state") or "",
+        assistant_text=(_text(data, "assistant_text") or "").strip() or None,
+        error_code=_text(error, "code") if isinstance(error, dict) else None,
+    )
 
 
 class CodieClient:
@@ -458,6 +493,39 @@ class CodieClient:
     async def async_post_agent_result(self, text: str) -> None:
         """Queue `text` for the Character to speak once idle, and save it to chat history."""
         await self.async_request("POST", "/data/user/agent/results", {"text": text})
+
+    async def async_post_chat_turn(
+        self, request_id: str, slot: int, text: str, *, remember: bool
+    ) -> CodieChatTurn:
+        """Send `text` to the Character in `slot` as something the user said, and have it answer.
+
+        The Character speaks its answer on the Codie, cutting off whatever it is doing, and may
+        call no Tools. With `remember` the turn is saved to its chat history. Returns once the
+        Codie accepted it; follow it with `async_get_chat_turn`.
+        """
+        data = await self.async_request(
+            "POST",
+            "/data/user/chat/turns",
+            {
+                "request_id": request_id,
+                "slot": slot,
+                "input": {"type": "text", "text": text},
+                "output": {"speech": "device"},
+                "interrupt": True,
+                "retention": "chat" if remember else "none",
+                "tools": "none",
+            },
+        )
+        return _chat_turn(_as_dict(data))
+
+    async def async_get_chat_turn(self, turn_id: str) -> CodieChatTurn:
+        """Read where a conversation turn stands."""
+        data = await self.async_request("GET", f"/data/user/chat/turns/{turn_id}")
+        return _chat_turn(_as_dict(data))
+
+    async def async_cancel_chat_turn(self, turn_id: str) -> None:
+        """Stop a conversation turn, including its speech."""
+        await self.async_request("POST", f"/data/user/chat/turns/{turn_id}/cancel")
 
     async def async_get_tool_integration(self, integration_id: str) -> dict[str, Any] | None:
         """Read a registered tool integration, or None if it does not exist."""

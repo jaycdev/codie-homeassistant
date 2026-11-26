@@ -3,7 +3,8 @@ blueprint:
   description: >-
     When an appliance's power stays below a threshold for a while, such as a washing machine
     or dishwasher at the end of its cycle, the Character says so in a Queued announcement:
-    once it is idle, and remembered as something it said.
+    once it is idle, and remembered as something it said. Or, if you turn on "In character",
+    in its own words, at once.
   domain: automation
   author: jaycdev
   source_url: https://github.com/jaycdev/codie-homeassistant/blob/main/blueprints/automation/codie/appliance_finished.yaml
@@ -30,8 +31,9 @@ blueprint:
     message:
       name: Message
       description: >-
-        What the Character says, word for word. At most 200 characters: a longer message is
-        rejected, never cut short.
+        What the Character says, word for word, or the message it says in its own words. At
+        most 200 characters, or 15000 in character: a longer message is rejected, never cut
+        short.
       default: The washing machine has finished
       selector:
         text:
@@ -55,8 +57,20 @@ blueprint:
         minutes: 5
       selector:
         duration:
+    in_character:
+      name: In character
+      description: >-
+        Let the Character say it in its own words and personality, instead of word for word. It
+        starts after about 8 seconds, cuts off whatever the Character is doing, and spends some
+        of the Codie's token quota. Nothing is saved to the chat history.
+      default: false
+      selector:
+        boolean:
 
 mode: single
+
+variables:
+  in_character: !input in_character
 
 triggers:
   - trigger: numeric_state
@@ -78,4 +92,6 @@ actions:
     target: !input codie
     data:
       message: !input message
-      queue: true
+      in_character: !input in_character
+      # An announcement in character is always said at once, so it cannot be queued.
+      queue: "{{ not in_character }}"
