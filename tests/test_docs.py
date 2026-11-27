@@ -19,7 +19,7 @@ def test_readme_lists_every_tool() -> None:
 
 def test_readme_offers_every_blueprint_for_import() -> None:
     """Each blueprint has an "Import blueprint" button pointing at its file."""
-    blueprints = README.parent / "blueprints" / "automation" / "codie"
+    blueprints = README.parent / "custom_components" / "codie" / "blueprints" / "automation"
     urls = {
         unquote(url)
         for url in re.findall(
@@ -28,6 +28,6 @@ def test_readme_offers_every_blueprint_for_import() -> None:
         )
     }
     assert urls == {
-        f"https://github.com/jaycdev/codie-homeassistant/blob/main/blueprints/automation/codie/{path.name}"
+        f"https://github.com/jaycdev/codie-homeassistant/blob/main/custom_components/codie/blueprints/automation/{path.name}"
         for path in blueprints.glob("*.yaml")
     }

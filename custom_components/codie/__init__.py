@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import logging
+import shutil
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
 from functools import partial
+from pathlib import Path
 from typing import Any
 
 from homeassistant.components.homeassistant.exposed_entities import async_listen_entity_updates
@@ -59,6 +61,9 @@ PLATFORMS = [
 
 CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
 
+# HACS installs only this folder, so the blueprints ship inside it, one folder per blueprint domain.
+BLUEPRINTS = Path(__file__).parent / "blueprints"
+
 # Components load in bursts at startup; wait for the burst to end before comparing catalogs.
 REFRESH_COOLDOWN_S = 10.0
 # A refresh that failed is tried again after this, in case nothing else changes meanwhile.
@@ -98,8 +103,9 @@ def _client_for(
 
 
 async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
-    """Register the integration's actions."""
+    """Register the integration's actions and install its blueprints."""
     async_register_services(hass)
+    await hass.async_add_executor_job(_install_blueprints, Path(hass.config.path("blueprints")))
 
     # Home Assistant does not call `async_unload_entry` for an entry whose setup failed, so
     # its repair issues are cleared here once it is disabled or stops retrying.
@@ -114,6 +120,16 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
 
     async_dispatcher_connect(hass, SIGNAL_CONFIG_ENTRY_CHANGED, _entry_changed)
     return True
+
+
+def _install_blueprints(config_blueprints: Path) -> None:
+    """Copy each shipped blueprint that is missing; one already there may hold the user's edits."""
+    for domain_folder in BLUEPRINTS.iterdir():
+        target = config_blueprints / domain_folder.name / DOMAIN
+        for blueprint in domain_folder.glob("*.yaml"):
+            if not (target / blueprint.name).exists():
+                target.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(blueprint, target / blueprint.name)
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: CodieConfigEntry) -> bool:
