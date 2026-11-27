@@ -656,7 +656,19 @@ async def async_call_tool(
         ) from err
     except HomeAssistantError as err:
         raise ToolError(ERROR_HOME_ASSISTANT, str(err)) from err
-    data = _shape_result(raw)
+    try:
+        data = _shape_result(raw)
+    except ToolError as err:
+        # The live context matches a name only as a whole, so a part of one such as "tv" for
+        # "Bedroom TV" misses. Its bare "no match" leaves the Character nothing to retry with.
+        missed = arguments.get("name")
+        if assist_name != ASSIST_LIVE_CONTEXT or not missed or _matches_a_name(hass, missed):
+            raise
+        raise ToolError(
+            ERROR_TARGET_NOT_FOUND,
+            f"No exposed entity is named {missed}. "
+            f"Retry with one of these exposed names: {_exposed_names(hass)}",
+        ) from err
     if affected is not None:
         affected.extend(_acted_on(raw))
     return data
@@ -720,6 +732,14 @@ def _exposed_names(hass: HomeAssistant) -> str:
             names.append(f"{name} ({area})" if area else name)
     text = ", ".join(sorted(names))
     return text if len(text) <= MAX_NAMES_CHARS else text[:MAX_NAMES_CHARS] + ", ..."
+
+
+def _matches_a_name(hass: HomeAssistant, name: str) -> bool:
+    """Whether Assist matches `name` to an exposed entity, in any area."""
+    constraints = intent.MatchTargetsConstraints(
+        name=name, assistant="conversation", allow_duplicate_names=True
+    )
+    return intent.async_match_targets(hass, constraints).is_match
 
 
 def _script_names(hass: HomeAssistant) -> list[str]:

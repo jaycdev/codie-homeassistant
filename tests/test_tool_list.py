@@ -721,14 +721,14 @@ async def test_tool_result_errors_become_failed_calls(
 ) -> None:
     await setup_assist(hass)
     live = FakeLiveContext()
-    live.reply = FakeToolResult({"error": "No exposed entities matched name 'x'"}, error=True)
+    live.reply = FakeToolResult({"error": "No exposed entities found in domain(s): x"}, error=True)
     with patch(
         "custom_components.codie.tools._assist_api_tools",
         return_value=([live], llm.selector_serializer),
     ):
         await setup(hass, fake_codie)
         await wait_connected(hass, fake_codie, True)
-        result = await fake_codie.invoke(INTEGRATION_ID, "get_home_state", {"name": "x"})
+        result = await fake_codie.invoke(INTEGRATION_ID, "get_home_state", {"domain": "x"})
 
     assert result["status"] == "failed"
     assert result["code"] == "assist_failed"
@@ -830,6 +830,31 @@ async def test_a_missed_name_lists_the_aliases_assist_matches(
     for name in ("Jay TV", "Bedroom TV"):
         await fake_codie.invoke(INTEGRATION_ID, "turn_on", {"name": name})
     assert len(calls) == 1
+
+
+async def test_a_state_lookup_by_a_missed_name_lists_the_exposed_names_to_try(
+    hass: HomeAssistant, fake_codie: FakeCodie
+) -> None:
+    # "Turn on bedroom TV": the Character looked up "tv", which Assist matches only as a whole
+    # name, and gave up on Assist's bare "no match".
+    await setup_assist(hass)
+    tv = add_entity(hass, "media_player", "Jay TV", True)
+    add_entity(hass, "light", "secret_lamp", False)
+    er.async_get(hass).async_update_entity(tv, aliases=["Bedroom TV"])
+    put_in_area(hass, tv, "Bedroom")
+    calls = async_mock_service(hass, "media_player", "turn_on")
+    await start_in_area(hass, fake_codie, "Study")
+
+    result = await fake_codie.invoke(INTEGRATION_ID, "get_home_state", {"name": "tv"})
+
+    assert result["code"] == "target_not_found"
+    error = result["data"]["error"]
+    assert "Bedroom TV" in error
+    assert "secret_lamp" not in error
+    # The name it lists works from the Codie's own area.
+    retry = await fake_codie.invoke(INTEGRATION_ID, "turn_on", {"name": "bedroom tv"})
+    assert retry["status"] == "succeeded"
+    assert acted_on(calls) == [tv]
 
 
 def tool_named(fake: FakeCodie, name: str) -> dict[str, Any]:
