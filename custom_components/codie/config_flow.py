@@ -17,6 +17,7 @@ from homeassistant.config_entries import (
 from homeassistant.const import CONF_HOST, CONF_PORT
 from homeassistant.core import callback
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
+from homeassistant.helpers.service_info.zeroconf import ZeroconfServiceInfo
 
 from .api import (
     CodieApiError,
@@ -83,6 +84,33 @@ class CodieConfigFlow(ConfigFlow, domain=DOMAIN):
             errors=errors,
         )
 
+    async def async_step_zeroconf(self, discovery_info: ZeroconfServiceInfo) -> ConfigFlowResult:
+        """A Codie announced itself on the network; offer to add it."""
+        # The Codie's local API is reached over IPv4; an IPv6 address must not replace a
+        # working host below.
+        if discovery_info.ip_address.version != 4:
+            return self.async_abort(reason="not_ipv4_address")
+        self._host = discovery_info.host
+        self._port = discovery_info.port or DEFAULT_PORT
+        # The announced `device_id` is the Codie's `machine_id`, the entry's unique ID, so a
+        # moved Codie gets its new address here.
+        device_id = discovery_info.properties.get("device_id")
+        if isinstance(device_id, str) and device_id:
+            await self.async_set_unique_id(device_id)
+            self._abort_if_unique_id_configured(
+                updates={CONF_HOST: self._host, CONF_PORT: self._port}
+            )
+        # Also matched by address, for an announcement without a `device_id`.
+        self._async_abort_entries_match({CONF_HOST: self._host})
+        self.context["title_placeholders"] = {"host": self._host}
+        return await self.async_step_zeroconf_confirm()
+
+    async def async_step_zeroconf_confirm(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Ask before making the discovered Codie display a code."""
+        return await self._async_confirm_then_pair("zeroconf_confirm", user_input)
+
     async def async_step_reauth(self, entry_data: Mapping[str, Any]) -> ConfigFlowResult:
         """The stored credentials stopped working; pair again with the same Codie."""
         self._host = entry_data[CONF_HOST]
@@ -93,6 +121,12 @@ class CodieConfigFlow(ConfigFlow, domain=DOMAIN):
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
         """Explain, then make the Codie display a code."""
+        return await self._async_confirm_then_pair("reauth_confirm", user_input)
+
+    async def _async_confirm_then_pair(
+        self, step_id: str, user_input: dict[str, Any] | None
+    ) -> ConfigFlowResult:
+        """Show `step_id`, which names the host; once submitted, make the Codie display a code."""
         errors: dict[str, str] = {}
         if user_input is not None:
             result, error = await self._async_start_pairing()
@@ -102,9 +136,7 @@ class CodieConfigFlow(ConfigFlow, domain=DOMAIN):
             errors["base"] = error
 
         return self.async_show_form(
-            step_id="reauth_confirm",
-            description_placeholders={"host": self._host},
-            errors=errors,
+            step_id=step_id, description_placeholders={"host": self._host}, errors=errors
         )
 
     async def _async_start_pairing(self) -> tuple[ConfigFlowResult | None, str | None]:
@@ -197,7 +229,9 @@ class CodieConfigFlow(ConfigFlow, domain=DOMAIN):
             data[CONF_INTEGRATION_ID] = entry.data[CONF_INTEGRATION_ID]
             return self.async_update_reload_and_abort(entry, data=data)
 
-        self._abort_if_unique_id_configured()
+        # Pairing the same Codie again gave it new credentials, maybe at a new address; keep
+        # them, or the existing entry could be left with ones the Codie no longer accepts.
+        self._abort_if_unique_id_configured(updates=data)
         data[CONF_INTEGRATION_ID] = str(uuid.uuid4())
         return self.async_create_entry(title=f"Codie ({self._host})", data=data)
 

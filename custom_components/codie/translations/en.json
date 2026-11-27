@@ -1,5 +1,6 @@
 {
   "config": {
+    "flow_title": "Codie ({host})",
     "step": {
       "user": {
         "title": "Connect to your Codie",
@@ -12,6 +13,10 @@
           "host": "The IP address or hostname of the Codie.",
           "port": "The port of the Codie's local API. Leave at 8081 unless you changed it."
         }
+      },
+      "zeroconf_confirm": {
+        "title": "Add the Codie found on your network",
+        "description": "Home Assistant found a Codie at {host}. The Codie must be awake and signed in. Select Submit to make it show a pairing code."
       },
       "reauth_confirm": {
         "title": "Pair with your Codie again",
@@ -40,7 +45,8 @@
       "unknown": "Unexpected error while pairing. See the Home Assistant log for details.",
       "reauth_successful": "Pairing worked again. The Codie is back online.",
       "wrong_device": "This is a different Codie from the one that was set up. Check the host, or add it as a new Codie.",
-      "not_signed_in": "No user is signed in on the Codie. Sign in on the device, then try again."
+      "not_ipv4_address": "The Codie announced an IPv6 address. Home Assistant reaches the Codie over IPv4; add it with its IPv4 address instead.",
+      "not_signed_in":"No user is signed in on the Codie. Sign in on the device, then try again."
     }
   },
   "entity": {
