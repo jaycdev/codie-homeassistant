@@ -92,15 +92,15 @@ class CodieConfigFlow(ConfigFlow, domain=DOMAIN):
             return self.async_abort(reason="not_ipv4_address")
         self._host = discovery_info.host
         self._port = discovery_info.port or DEFAULT_PORT
-        # `pair/confirm` reports the `machine_id` as `device_id` too, so the announced one is
-        # expected to be the entry's unique ID; then a moved Codie gets its new address here.
+        # The announced `device_id` is the Codie's `machine_id`, the entry's unique ID, so a
+        # moved Codie gets its new address here.
         device_id = discovery_info.properties.get("device_id")
         if isinstance(device_id, str) and device_id:
             await self.async_set_unique_id(device_id)
             self._abort_if_unique_id_configured(
                 updates={CONF_HOST: self._host, CONF_PORT: self._port}
             )
-        # Also matched by address, in case the announced ID ever differs from `machine_id`.
+        # Also matched by address, for an announcement without a `device_id`.
         self._async_abort_entries_match({CONF_HOST: self._host})
         self.context["title_placeholders"] = {"host": self._host}
         return await self.async_step_zeroconf_confirm()
