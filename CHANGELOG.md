@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.4.0](https://github.com/jaycdev/codie-homeassistant/compare/v0.3.0...v0.4.0) (2026-11-27)
+
+
+### Features
+
+* discover Codies on the network over mDNS ([#33](https://github.com/jaycdev/codie-homeassistant/issues/33)) ([d13e48b](https://github.com/jaycdev/codie-homeassistant/commit/d13e48bff6db40d8ed069ee2e49e57f9c52b0a7c))
+
+
+### Bug Fixes
+
+* install the blueprints with the integration ([#32](https://github.com/jaycdev/codie-homeassistant/issues/32)) ([c49176f](https://github.com/jaycdev/codie-homeassistant/commit/c49176f9c08139e3d41ca50bbe27217733d4cd12))
+* let a state lookup find entities by part of their name ([#35](https://github.com/jaycdev/codie-homeassistant/issues/35)) ([ee6514d](https://github.com/jaycdev/codie-homeassistant/commit/ee6514d13fd4c85dd947d3e4dccd9b0821a01191))
+
 ## [0.3.0](https://github.com/jaycdev/codie-homeassistant/compare/v0.2.0...v0.3.0) (2026-11-26)
 
 
