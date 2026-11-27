@@ -9,7 +9,7 @@ blueprint:
     the 200 characters a Queued announcement allows by naming fewer events.
   domain: automation
   author: jaycdev
-  source_url: https://github.com/jaycdev/codie-homeassistant/blob/main/blueprints/automation/codie/morning_briefing.yaml
+  source_url: https://github.com/jaycdev/codie-homeassistant/blob/main/custom_components/codie/blueprints/automation/morning_briefing.yaml
   homeassistant:
     min_version: "2026.11.2"
   input:

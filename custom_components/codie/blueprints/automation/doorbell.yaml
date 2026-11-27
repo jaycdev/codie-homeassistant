@@ -6,7 +6,7 @@ blueprint:
     (announces on every press).
   domain: automation
   author: jaycdev
-  source_url: https://github.com/jaycdev/codie-homeassistant/blob/main/blueprints/automation/codie/doorbell.yaml
+  source_url: https://github.com/jaycdev/codie-homeassistant/blob/main/custom_components/codie/blueprints/automation/doorbell.yaml
   homeassistant:
     min_version: "2026.11.2"
   input:

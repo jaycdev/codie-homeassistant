@@ -7,7 +7,7 @@ blueprint:
     in its own words, at once.
   domain: automation
   author: jaycdev
-  source_url: https://github.com/jaycdev/codie-homeassistant/blob/main/blueprints/automation/codie/appliance_finished.yaml
+  source_url: https://github.com/jaycdev/codie-homeassistant/blob/main/custom_components/codie/blueprints/automation/appliance_finished.yaml
   homeassistant:
     min_version: "2026.11.2"
   input:

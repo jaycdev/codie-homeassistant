@@ -19,7 +19,9 @@ from pytest_homeassistant.common import async_fire_time_changed
 
 from custom_components.codie.const import DOMAIN
 
-BLUEPRINTS = Path(__file__).parent.parent / "blueprints" / "automation" / "codie"
+BLUEPRINTS = (
+    Path(__file__).parent.parent / "custom_components" / "codie" / "blueprints" / "automation"
+)
 CODIE = {"device_id": "codie_device"}
 
 
@@ -391,7 +393,7 @@ def test_blueprint_offers_the_same_codies_as_announce(path: Path) -> None:
     blueprint = load_yaml_dict(path)["blueprint"]
     assert blueprint["input"]["codie"]["selector"] == {"target": services["announce"]["target"]}
     assert blueprint["source_url"] == (
-        f"https://github.com/jaycdev/codie-homeassistant/blob/main/blueprints/automation/codie/{path.name}"
+        f"https://github.com/jaycdev/codie-homeassistant/blob/main/custom_components/codie/blueprints/automation/{path.name}"
     )
 
 
