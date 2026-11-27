@@ -8,6 +8,7 @@ import dataclasses
 import hashlib
 import json
 import logging
+import re
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from enum import StrEnum
@@ -22,6 +23,7 @@ from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers import intent, llm
 from homeassistant.helpers.importlib import async_import_module
+from homeassistant.util import yaml as yaml_util
 
 from .api import CodieApiError, CodieClient
 from .errors import (
@@ -656,7 +658,22 @@ async def async_call_tool(
         ) from err
     except HomeAssistantError as err:
         raise ToolError(ERROR_HOME_ASSISTANT, str(err)) from err
-    data = _shape_result(raw)
+    try:
+        data = _shape_result(raw)
+    except ToolError as err:
+        # The live context matches a name only as a whole, so a part of one such as "tv" for
+        # "Bedroom TV" misses. Its bare "no match" leaves the Character nothing to retry with.
+        missed = arguments.get("name")
+        if assist_name != ASSIST_LIVE_CONTEXT or not missed or _matches_a_name(hass, missed):
+            raise
+        found = await _look_up_part_of_a_name(hass, assist_tool, arguments, context)
+        if found is None:
+            raise ToolError(
+                ERROR_TARGET_NOT_FOUND,
+                f"No exposed entity is named {missed}. "
+                f"Retry with one of these exposed names: {_exposed_names(hass)}",
+            ) from err
+        data = found
     if affected is not None:
         affected.extend(_acted_on(raw))
     return data
@@ -720,6 +737,58 @@ def _exposed_names(hass: HomeAssistant) -> str:
             names.append(f"{name} ({area})" if area else name)
     text = ", ".join(sorted(names))
     return text if len(text) <= MAX_NAMES_CHARS else text[:MAX_NAMES_CHARS] + ", ..."
+
+
+def _matches_a_name(hass: HomeAssistant, name: str) -> bool:
+    """Whether Assist matches `name` to an exposed entity, in any area."""
+    constraints = intent.MatchTargetsConstraints(
+        name=name, assistant="conversation", allow_duplicate_names=True
+    )
+    return intent.async_match_targets(hass, constraints).is_match
+
+
+def _words(text: str) -> set[str]:
+    return set(re.findall(r"\w+", text.casefold()))
+
+
+async def _look_up_part_of_a_name(
+    hass: HomeAssistant, live_context: llm.Tool, arguments: dict[str, Any], context: llm.LLMContext
+) -> dict[str, Any] | None:
+    """The live context of the entities with every word of the name in one of theirs, or None.
+
+    Only a lookup matches part of a name: several matches are fine for it, and the Character
+    picks the one the user meant. The Tools that act still need the whole name. The other
+    filters, such as the domain, still apply, so the live context is read without the name and
+    its entities are picked by their names.
+    """
+    wanted = _words(arguments["name"])
+    rest = {key: value for key, value in arguments.items() if key != "name"}
+    raw, failed = _unwrap(
+        await live_context.async_call(hass, llm.ToolInput(live_context.name, rest), context)
+    )
+    text = raw.get("result")
+    if failed or not wanted or not isinstance(text, str):
+        return None
+    header, _, body = text.partition("\n")
+    try:
+        entities = yaml_util.parse_yaml(body)
+    except HomeAssistantError:
+        return None
+    if not isinstance(entities, list):
+        return None
+    matches = [
+        entity
+        for entity in entities
+        if isinstance(entity, dict)
+        and any(wanted <= _words(name) for name in str(entity.get("names", "")).split(","))
+    ]
+    if not matches:
+        return None
+    result = (
+        f"No exposed entity is named {arguments['name']}; these names contain it.\n"
+        f"{header}\n{yaml_util.dump(matches)}"
+    )
+    return {"success": True, "result": _truncate(result, MAX_RESULT_BYTES)}
 
 
 def _script_names(hass: HomeAssistant) -> list[str]:
