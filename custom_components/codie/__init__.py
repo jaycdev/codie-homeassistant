@@ -12,6 +12,11 @@ from pathlib import Path
 from typing import Any
 
 from homeassistant.components.homeassistant.exposed_entities import async_listen_entity_updates
+from homeassistant.components.intent import (
+    TimerEventType,
+    TimerInfo,
+    async_register_timer_handler,
+)
 from homeassistant.config_entries import (
     SIGNAL_CONFIG_ENTRY_CHANGED,
     ConfigEntry,
@@ -175,6 +180,21 @@ async def async_setup_entry(hass: HomeAssistant, entry: CodieConfigEntry) -> boo
     )
     timers = CodieTimers(hass, timers_store(hass, entry.entry_id), language, device.id, announce)
     await timers.async_load()
+    # Right away: a later step of this setup may fail, and a retry loads the store again.
+    entry.async_on_unload(timers.async_unload)
+
+    # Home Assistant's own timers that something else starts on the Codie's device ring on the
+    # Codie. Without a handler they fail with TimersNotSupportedError.
+    @callback
+    def _timer_event(event_type: TimerEventType, info: TimerInfo) -> None:
+        if event_type is TimerEventType.FINISHED:
+            entry.async_create_task(hass, timers.async_announce_done(info.name), "codie timer done")
+
+    try:
+        entry.async_on_unload(async_register_timer_handler(hass, device.id, _timer_event))
+    except KeyError:
+        # Home Assistant's intent integration is not set up, so it has no timers to ring.
+        _LOGGER.debug("Home Assistant has no timers; not registering the Codie as a timer device")
     recorder = ToolRecorder(
         hass, entry, partial(async_call_tool, hass, language, device.id, timers)
     )
@@ -280,7 +300,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: CodieConfigEntry) -> boo
 
         entry.async_on_unload(async_at_started(hass, _started))
     entry.async_on_unload(executor.async_close)
-    entry.async_on_unload(timers.async_unload)
     entry.async_create_background_task(hass, executor.async_run(), "codie executor")
     return True
 

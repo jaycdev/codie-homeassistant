@@ -5,7 +5,8 @@
     "@jaycdev"
   ],
   "after_dependencies": [
-    "conversation"
+    "conversation",
+    "intent"
   ],
   "config_flow": true,
   "documentation": "https://github.com/jaycdev/codie-homeassistant",
