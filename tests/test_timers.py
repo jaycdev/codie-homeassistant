@@ -25,8 +25,11 @@ from pytest_homeassistant.common import MockConfigEntry, async_fire_time_changed
 from custom_components.codie.const import DOMAIN
 from custom_components.codie.errors import ToolError
 from custom_components.codie.timers import (
+    DONE_MESSAGES,
     FAILURE_MESSAGES,
+    NAMELESS_DONE_MESSAGES,
     CodieTimers,
+    done_message,
     failure_message,
     timers_store,
 )
@@ -885,3 +888,334 @@ async def test_removing_the_codie_deletes_its_timers(
 
     assert timers_store(hass, entry.entry_id).key not in hass_storage
     assert not turned_off
+
+
+# Plain countdowns: a Timer without a Command, which only rings.
+
+
+async def test_a_countdown_rings_on_the_codie_when_it_ends(
+    hass: HomeAssistant, codie: FakeCodie
+) -> None:
+    await start_codie(hass, codie)
+
+    with patch(
+        "custom_components.codie.timers.async_converse", side_effect=AssertionError("ran")
+    ) as converse:
+        result = await call(codie, "timer_start", name="pasta", minutes=10)
+        await elapse(hass, minutes=9)
+        assert not codie.utterances
+        await elapse(hass, minutes=11)
+
+    assert result["status"] == "succeeded"
+    assert "pasta" in result["data"]["result"]
+    (utterance,) = codie.utterances
+    assert utterance["text"] == "Time's up: pasta."
+    converse.assert_not_called()
+
+
+@pytest.mark.parametrize("command", [None, "", "   "])
+async def test_a_countdown_needs_no_command_check(
+    hass: HomeAssistant, codie: FakeCodie, command: str | None
+) -> None:
+    await start_codie(hass, codie)
+    # A sentence the built-in agent does not understand, which would fail as a Command.
+    arguments: dict[str, Any] = {"name": "make me a sandwich", "minutes": 5}
+    if command is not None:
+        arguments["command"] = command
+
+    result = await call(codie, "timer_start", **arguments)
+
+    assert result["status"] == "succeeded"
+
+
+async def test_a_countdown_without_a_name_is_named_after_its_duration(
+    hass: HomeAssistant, codie: FakeCodie
+) -> None:
+    await start_codie(hass, codie)
+
+    await call(codie, "timer_start", hours=1, minutes=30)
+    await call(codie, "timer_start", seconds=45)
+    status = await call(codie, "timer_control", action="status")
+    await elapse(hass, hours=2)
+
+    lines = status["data"]["result"].splitlines()
+    assert lines[0].startswith("1 h 30 min: 1 h 30 min left")
+    assert lines[1].startswith("45 s: 45 s left")
+    # A name made up from the length is not said.
+    assert [u["text"] for u in codie.utterances] == ["The timer is done."] * 2
+
+
+async def test_the_status_of_a_countdown_has_no_command(
+    hass: HomeAssistant, codie: FakeCodie
+) -> None:
+    await start_codie(hass, codie)
+    await call(codie, "timer_start", name="pasta", minutes=10)
+    await start_timer(codie, "Lamp", minutes=20)
+
+    status = await call(codie, "timer_control", action="status", name="pasta")
+    everything = await call(codie, "timer_control", action="status")
+
+    assert status["data"]["result"] == "pasta: 10 min left"
+    assert everything["data"]["result"].splitlines()[1].endswith("runs: turn off the kitchen lamp")
+
+
+async def test_a_countdown_can_be_cancelled(hass: HomeAssistant, codie: FakeCodie) -> None:
+    await start_codie(hass, codie)
+    await call(codie, "timer_start", name="pasta", minutes=10)
+
+    cancelled = await call(codie, "timer_control", action="cancel", name="pasta")
+    await elapse(hass, minutes=11)
+
+    assert cancelled["status"] == "succeeded"
+    assert not codie.utterances
+
+
+async def test_a_countdown_shares_the_names_and_the_limit_of_every_timer(
+    hass: HomeAssistant, codie: FakeCodie
+) -> None:
+    await start_codie(hass, codie)
+    await call(codie, "timer_start", name="Pasta", minutes=10)
+
+    same_name = await call(codie, "timer_start", name="pasta", minutes=5)
+    for index in range(9):
+        await call(codie, "timer_start", name=f"t{index}", minutes=5)
+    full = await call(codie, "timer_start", name="one more", minutes=5)
+
+    assert same_name["status"] == "failed"
+    assert full["status"] == "failed"
+    assert "10" in full["message"]
+
+
+async def test_a_done_message_is_logged_when_the_codie_cannot_say_it(
+    hass: HomeAssistant, codie: FakeCodie, caplog: pytest.LogCaptureFixture
+) -> None:
+    await start_codie(hass, codie)
+    await call(codie, "timer_start", name="pasta", minutes=10)
+    codie.utterance_error = (409, "DEVICE_BLOCKED")
+
+    with caplog.at_level(logging.WARNING):
+        await elapse(hass, minutes=11)
+
+    assert "pasta" in caplog.text
+    assert "could not say so" in caplog.text
+
+
+@pytest.mark.parametrize(
+    ("language", "name", "message"),
+    [
+        ("en", "pasta", "Time's up: pasta."),
+        ("fr-CA", "pâtes", "Temps écoulé : pâtes."),
+        ("en", "pasta timer", "Time's up: pasta timer."),
+        ("ja", "パスタ", "パスタの時間です。"),
+        ("zh_Hant_HK", "麵", "麵時間到了。"),
+        ("xx", "pasta", "Time's up: pasta."),
+        (None, "{pasta}", "Time's up: {pasta}."),
+        ("en", None, "The timer is done."),
+        ("de", None, "Der Timer ist abgelaufen."),
+        ("ja", None, "タイマーが終わりました。"),
+    ],
+)
+def test_the_done_message_follows_the_language(
+    language: str | None, name: str | None, message: str
+) -> None:
+    assert done_message(language, name) == message
+
+
+def test_every_done_message_holds_the_name_once_and_every_language_has_both() -> None:
+    assert DONE_MESSAGES.keys() == FAILURE_MESSAGES.keys() == NAMELESS_DONE_MESSAGES.keys()
+    for language, template in DONE_MESSAGES.items():
+        assert template.count("{name}") == 1, language
+        assert template.replace("{name}", "").count("{") == 0, language
+    for language, template in NAMELESS_DONE_MESSAGES.items():
+        assert "{" not in template, language
+
+
+async def test_a_countdown_is_announced_in_the_ai_language(
+    hass: HomeAssistant, codie: FakeCodie
+) -> None:
+    codie.ai_language = "fr"
+    await start_codie(hass, codie)
+    await call(codie, "timer_start", name="pâtes", minutes=20)
+    await call(codie, "timer_start", minutes=30)
+
+    await elapse(hass, minutes=31)
+
+    assert [u["text"] for u in codie.utterances] == [
+        "Temps écoulé : pâtes.",
+        "Le minuteur est terminé.",
+    ]
+
+
+async def test_a_countdown_survives_a_reload_with_its_remaining_time(
+    hass: HomeAssistant, codie: FakeCodie, hass_storage: dict[str, Any]
+) -> None:
+    await setup_assist(hass)
+    entry = await setup(hass, codie)
+    await wait_connected(hass, codie, True)
+    await call(codie, "timer_start", name="pasta", minutes=20)
+
+    assert stored_timers(hass, hass_storage, entry)[0]["command"] == ""
+    assert await hass.config_entries.async_unload(entry.entry_id)
+    await elapse(hass, minutes=10)
+    assert not codie.utterances
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await wait_connected(hass, codie, True)
+
+    status = await call(codie, "timer_control", action="status")
+    await elapse(hass, minutes=21)
+
+    assert status["data"]["result"].startswith("pasta: ")
+    assert [u["text"] for u in codie.utterances] == ["Time's up: pasta."]
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "set a 10 minute timer",
+        "set a 10 minute timer called pasta",
+        "cancel the pasta timer",
+        "how much time is left on the pasta timer",
+        "pause the timer",
+    ],
+)
+async def test_a_command_that_is_a_timer_intent_is_refused(
+    hass: HomeAssistant, codie: FakeCodie, command: str
+) -> None:
+    await start_codie(hass, codie)
+
+    result = await call(codie, "timer_start", command=command, minutes=10)
+
+    assert result["status"] == "failed"
+    assert result["code"] == "invalid_arguments"
+    assert "plain countdown" in result["message"]
+
+
+async def test_a_generated_name_is_remembered_as_not_given(
+    hass: HomeAssistant, codie: FakeCodie, hass_storage: dict[str, Any]
+) -> None:
+    entry = await resume_entry(hass, codie, hass_storage)
+    await call(codie, "timer_start", minutes=10)
+    await call(codie, "timer_start", name="pasta", minutes=20)
+
+    assert [t["named"] for t in stored_timers(hass, hass_storage, entry)] == [False, True]
+
+
+async def test_a_stored_timer_without_the_named_flag_is_taken_as_named(
+    hass: HomeAssistant, codie: FakeCodie, hass_storage: dict[str, Any]
+) -> None:
+    await resume_entry(
+        hass,
+        codie,
+        hass_storage,
+        {"name": "pasta", "command": "", "ends_at": dt_util.utcnow().timestamp() + 450},
+    )
+
+    await elapse(hass, minutes=11)
+
+    assert [u["text"] for u in codie.utterances] == ["Time's up: pasta."]
+
+
+async def test_a_stored_countdown_resumes_and_one_that_ended_is_dropped(
+    hass: HomeAssistant, codie: FakeCodie, hass_storage: dict[str, Any]
+) -> None:
+    now = dt_util.utcnow().timestamp()
+    entry = await resume_entry(
+        hass,
+        codie,
+        hass_storage,
+        {"name": "pasta", "command": "", "ends_at": now + 450},
+        {"name": "eggs", "command": "", "ends_at": now - 60},
+    )
+
+    status = await call(codie, "timer_control", action="status")
+    await elapse(hass, minutes=11)
+
+    assert status["data"]["result"].startswith("pasta: 7 min 30 s left")
+    assert [u["text"] for u in codie.utterances] == ["Time's up: pasta."]
+    assert stored_timers(hass, hass_storage, entry) == []
+
+
+def codie_device(hass: HomeAssistant, entry: MockConfigEntry) -> dr.DeviceEntry:
+    (device,) = dr.async_entries_for_config_entry(dr.async_get(hass), entry.entry_id)
+    return device
+
+
+async def start_home_assistant_timer(
+    hass: HomeAssistant, device_id: str | None, **slots: Any
+) -> intent.IntentResponse:
+    """Say "set a timer" the way Assist does, from the device `device_id`."""
+    return await intent.async_handle(
+        hass,
+        "test",
+        intent.INTENT_START_TIMER,
+        {key: {"value": value} for key, value in slots.items()},
+        device_id=device_id,
+    )
+
+
+async def test_a_home_assistant_timer_on_the_codie_rings_on_it(
+    hass: HomeAssistant, codie: FakeCodie
+) -> None:
+    await setup_assist(hass)
+    entry = await setup(hass, codie)
+    await wait_connected(hass, codie, True)
+
+    await start_home_assistant_timer(hass, codie_device(hass, entry).id, minutes=1, name="pasta")
+    await elapse(hass, seconds=30)
+    assert not codie.utterances
+    await elapse(hass, minutes=2)
+
+    assert [u["text"] for u in codie.utterances] == ["Time's up: pasta."]
+
+
+async def test_a_home_assistant_timer_without_a_name_rings_without_one(
+    hass: HomeAssistant, codie: FakeCodie
+) -> None:
+    await setup_assist(hass)
+    entry = await setup(hass, codie)
+    await wait_connected(hass, codie, True)
+
+    await start_home_assistant_timer(hass, codie_device(hass, entry).id, minutes=1)
+    await elapse(hass, minutes=2)
+
+    assert [u["text"] for u in codie.utterances] == ["The timer is done."]
+
+
+async def test_a_cancelled_home_assistant_timer_does_not_ring(
+    hass: HomeAssistant, codie: FakeCodie
+) -> None:
+    await setup_assist(hass)
+    entry = await setup(hass, codie)
+    await wait_connected(hass, codie, True)
+    device_id = codie_device(hass, entry).id
+    await start_home_assistant_timer(hass, device_id, minutes=1)
+
+    await intent.async_handle(hass, "test", intent.INTENT_CANCEL_TIMER, {}, device_id=device_id)
+    await elapse(hass, minutes=2)
+
+    assert not codie.utterances
+
+
+async def test_a_home_assistant_timer_needs_a_device_that_handles_timers(
+    hass: HomeAssistant, codie: FakeCodie
+) -> None:
+    await setup_assist(hass)
+    entry = await setup(hass, codie)
+    await wait_connected(hass, codie, True)
+    device_id = codie_device(hass, entry).id
+    assert await hass.config_entries.async_unload(entry.entry_id)
+
+    with pytest.raises(intent.IntentHandleError):
+        await start_home_assistant_timer(hass, device_id, minutes=1)
+
+
+async def test_the_catalog_does_not_require_a_command(
+    hass: HomeAssistant, codie: FakeCodie
+) -> None:
+    await start_codie(hass, codie)
+
+    tools: list[dict[str, Any]] = codie.tool_integrations[INTEGRATION_ID]["catalog"]["tools"]
+    (start,) = (tool for tool in tools if tool["name"] == "timer_start")
+    assert "required" not in start["parameters"]
+    assert "minLength" not in start["parameters"]["properties"]["command"]
+    assert len(start["description"]) <= 200

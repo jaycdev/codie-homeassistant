@@ -42,11 +42,11 @@ The Character's own, set by talking to it, at a clock time. It can only speak; i
 The Character's own note to bring something up at a time. Like an Alarm, it can only speak.
 
 **Timer**:
-A countdown the Character sets through Home Assistant that carries a Command and runs it when it ends ("turn off the lights in 20 minutes"). Unlike an Alarm, it acts on the home.
+A countdown the Character sets through Home Assistant. It may carry a Command and run it when it ends ("turn off the lights in 20 minutes"), or be a plain countdown that rings when it ends with an immediate Announcement ("set a 10 minute pasta timer"). Unlike an Alarm, a Timer with a Command acts on the home.
 _Avoid_: delayed action, scheduled command
 
 **Command**:
-A short home-control sentence, written by the Character's model, that a Timer runs when it ends.
+A short home-control sentence, written by the Character's model, that a Timer runs when it ends. A Timer without one only rings.
 
 **Pairing**:
 The one-time exchange in which the Codie displays a code, the user enters it in Home Assistant, and Home Assistant receives lasting credentials for that Codie.

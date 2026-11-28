@@ -194,8 +194,9 @@ TOOLS: tuple[CodieTool, ...] = (
         INTEGRATION,
         "reversible",
         description=(
-            "Runs a home-control Command after a delay, such as 'turn off the kitchen lamp' in "
-            "20 minutes. At most 24 hours. Give it a name to refer to it later."
+            "Starts a countdown that rings when it ends. With a home command, such as "
+            "'turn off the kitchen lamp', it runs that instead. At most 24 hours. Name it to "
+            "refer to it."
         ),
         unavailable=TIMERS_UNAVAILABLE,
         parameters={
@@ -203,8 +204,10 @@ TOOLS: tuple[CodieTool, ...] = (
             "properties": {
                 "command": {
                     "type": "string",
-                    "description": "What to do when the Timer ends, as a short sentence",
-                    "minLength": 1,
+                    "description": (
+                        "What to do when the Timer ends, as a short sentence. "
+                        "Leave it out for a plain countdown that only rings"
+                    ),
                     "maxLength": MAX_COMMAND_CHARS,
                 },
                 "hours": {"type": "integer", "minimum": 0, "maximum": 24},
@@ -212,7 +215,6 @@ TOOLS: tuple[CodieTool, ...] = (
                 "seconds": {"type": "integer", "minimum": 0, "maximum": 86400},
                 "name": {"type": "string", "maxLength": MAX_NAME_CHARS},
             },
-            "required": ["command"],
             "additionalProperties": False,
         },
     ),

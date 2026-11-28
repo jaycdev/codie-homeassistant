@@ -1,4 +1,4 @@
-"""Timers: a Command the Character sets to run after a delay, checked when it is set."""
+"""Timers: a delay the Character sets, with a Command to run when it ends or just to ring."""
 
 from __future__ import annotations
 
@@ -18,6 +18,7 @@ from homeassistant.components.conversation.agent_manager import async_converse, 
 from homeassistant.components.conversation.const import HOME_ASSISTANT_AGENT
 from homeassistant.core import CALLBACK_TYPE, Context, HomeAssistant, callback
 from homeassistant.exceptions import HomeAssistantError
+from homeassistant.helpers import intent
 from homeassistant.helpers.event import async_call_later
 from homeassistant.helpers.intent import IntentResponse, IntentResponseType
 from homeassistant.helpers.storage import Store
@@ -57,6 +58,48 @@ FAILURE_MESSAGES = {
     "zh": "我没能执行“{command}”。",
     "zh-tw": "我沒能執行「{command}」。",
 }
+# What the Character says when a Timer with a name ends, by the Codie's AI language, with the same
+# languages as above. Each holds `{name}` once and no other placeholder. None of them says the word
+# "timer", as a name such as "pasta timer" often has it already.
+DONE_MESSAGES = {
+    "en": "Time's up: {name}.",
+    "de": "Die Zeit ist um: {name}.",
+    "es": "Se acabó el tiempo: {name}.",
+    "fr": "Temps écoulé : {name}.",
+    "it": "Tempo scaduto: {name}.",
+    "ja": "{name}の時間です。",
+    "ko": "{name} 시간이 다 됐어요.",
+    "pt": "O tempo acabou: {name}.",
+    "zh": "{name}时间到了。",
+    "zh-tw": "{name}時間到了。",
+}
+# The same for a timer that has no name, which holds no placeholder.
+NAMELESS_DONE_MESSAGES = {
+    "en": "The timer is done.",
+    "de": "Der Timer ist abgelaufen.",
+    "es": "El temporizador ha terminado.",
+    "fr": "Le minuteur est terminé.",
+    "it": "Il timer è terminato.",
+    "ja": "タイマーが終わりました。",
+    "ko": "타이머가 끝났어요.",
+    "pt": "O temporizador terminou.",
+    "zh": "计时器时间到了。",
+    "zh-tw": "計時器時間到了。",
+}
+# The intents of Home Assistant's own timers. A Command that is one would start a timer of
+# Home Assistant's that the Timer Tools cannot see.
+_TIMER_INTENTS = frozenset(
+    {
+        intent.INTENT_START_TIMER,
+        intent.INTENT_CANCEL_TIMER,
+        intent.INTENT_CANCEL_ALL_TIMERS,
+        intent.INTENT_INCREASE_TIMER,
+        intent.INTENT_DECREASE_TIMER,
+        intent.INTENT_PAUSE_TIMER,
+        intent.INTENT_UNPAUSE_TIMER,
+        intent.INTENT_TIMER_STATUS,
+    }
+)
 # Other tags for Chinese in traditional characters.
 _TRADITIONAL_CHINESE = ("zh-hant", "zh-hk", "zh-mo")
 # Ends a sentence. A Command's own is dropped, since the message ends the sentence itself.
@@ -126,6 +169,31 @@ def _duration(arguments: dict[str, Any]) -> timedelta:
     return delay
 
 
+def _message_language(language: str | None) -> str:
+    """The key of the set messages that speak `language`: its own, its base or English."""
+    tag = (language or "").replace("_", "-").casefold()
+    if tag.startswith(_TRADITIONAL_CHINESE):
+        tag = "zh-tw"
+    if tag not in FAILURE_MESSAGES:
+        tag = tag.split("-", 1)[0]
+    if tag not in FAILURE_MESSAGES:
+        tag = "en"
+    return tag
+
+
+def done_message(language: str | None, name: str | None) -> str:
+    """What the Character says when the timer `name` is done, in the AI language `language`.
+
+    A language without its own message falls back to its base language, then to English. A
+    timer with no name gets a message without one. Braces in the name are not read as
+    placeholders.
+    """
+    tag = _message_language(language)
+    if not name:
+        return NAMELESS_DONE_MESSAGES[tag]
+    return DONE_MESSAGES[tag].format(name=name)
+
+
 def failure_message(language: str | None, command: str) -> str:
     """What the Character says when `command` failed, in the AI language `language`.
 
@@ -134,13 +202,7 @@ def failure_message(language: str | None, command: str) -> str:
     placeholders. In the English message, a capital on a first word such as "Turn" is dropped,
     as the Command continues the sentence. A word like "TV" keeps its capitals.
     """
-    tag = (language or "").replace("_", "-").casefold()
-    if tag.startswith(_TRADITIONAL_CHINESE):
-        tag = "zh-tw"
-    if tag not in FAILURE_MESSAGES:
-        tag = tag.split("-", 1)[0]
-    if tag not in FAILURE_MESSAGES:
-        tag = "en"
+    tag = _message_language(language)
     command = command.strip().rstrip(_SENTENCE_END).rstrip() or command
     if tag == "en" and (words := command.split(maxsplit=1)):
         first = words[0]
@@ -154,12 +216,23 @@ def _failed(response: IntentResponse) -> bool:
     return response.response_type is IntentResponseType.ERROR or bool(response.failed_results)
 
 
+def _span(seconds: int) -> str:
+    """`seconds` as hours, minutes and seconds, such as "1 h 30 min"."""
+    hours, rest = divmod(seconds, 3600)
+    minutes, seconds = divmod(rest, 60)
+    parts = [f"{n} {unit}" for n, unit in ((hours, "h"), (minutes, "min"), (seconds, "s")) if n]
+    return " ".join(parts) or "0 s"
+
+
 @dataclass
 class _Timer:
     name: str
+    # What to run when it ends. Empty for a plain countdown, which only rings.
     command: str
     # When it ends, as a UTC timestamp.
     ends_at: float
+    # Whether the Character gave the name. One made up from the length is not said when it ends.
+    named: bool = True
     cancel: CALLBACK_TYPE | None = None
 
     def cancel_callback(self) -> None:
@@ -194,22 +267,26 @@ class CodieTimers:
     async def async_load(self) -> None:
         """Resume the stored Timers with the time they have left.
 
-        One that ended while Home Assistant was down is dropped: a Command is never run late.
+        One that ended while Home Assistant was down is dropped: a Command is never run late, and
+        a countdown is not rung long after.
         """
         stored = await self._store.async_load() or {}
         now = dt_util.utcnow().timestamp()
         for item in stored.get("timers", []):
             try:
-                timer = _Timer(item["name"], item["command"], float(item["ends_at"]))
+                timer = _Timer(
+                    item["name"], item["command"], float(item["ends_at"]), item.get("named", True)
+                )
             except KeyError, TypeError, ValueError:
                 _LOGGER.warning("Dropping a stored Timer that cannot be read: %s", item)
                 continue
             if timer.ends_at <= now:
                 _LOGGER.warning(
-                    "Dropping the Timer '%s': it ended while Home Assistant was not running, "
-                    "so its Command '%s' was not run",
+                    "Dropping the Timer '%s': it ended while Home Assistant was not running, so %s",
                     timer.name,
-                    timer.command,
+                    f"its Command '{timer.command}' was not run"
+                    if timer.command
+                    else "it did not ring",
                 )
                 continue
             self._schedule(timer, timedelta(seconds=timer.ends_at - now))
@@ -217,7 +294,10 @@ class CodieTimers:
 
     @property
     def running(self) -> list[tuple[str, str, datetime]]:
-        """The name, Command and end of each running Timer, soonest first."""
+        """The name, Command and end of each running Timer, soonest first.
+
+        The Command of a plain countdown is "".
+        """
         return [
             (timer.name, timer.command, dt_util.utc_from_timestamp(timer.ends_at))
             for timer in sorted(self._timers.values(), key=lambda timer: timer.ends_at)
@@ -226,18 +306,26 @@ class CodieTimers:
     async def async_start(self, arguments: dict[str, Any]) -> dict[str, Any]:
         """The `timer_start` Tool."""
         command = _text(arguments, "command", MAX_COMMAND_CHARS)
-        if not command:
-            raise ToolError(ERROR_INVALID_ARGUMENTS, "The Command must not be empty")
-        name = _text(arguments, "name", MAX_NAME_CHARS) or command
         delay = _duration(arguments)
+        # A countdown is named after its length, such as "10 min", unless it is given a name.
+        given = _text(arguments, "name", MAX_NAME_CHARS)
+        name = given or command or _span(int(delay.total_seconds()))
         async with self._start_lock:
             self._check_room(name)
-            await self._async_check(command)
+            if command:
+                await self._async_check(command)
             if self._unloaded:
                 raise ToolError(ERROR_TOOL_UNAVAILABLE, TIMERS_UNAVAILABLE)
-            timer = _Timer(name, command, dt_util.utcnow().timestamp() + delay.total_seconds())
+            timer = _Timer(
+                name,
+                command,
+                dt_util.utcnow().timestamp() + delay.total_seconds(),
+                named=bool(given or command),
+            )
             self._schedule(timer, delay)
             await self._async_save()
+        if not command:
+            return {"success": True, "result": f"Timer '{name}' will ring when it ends"}
         return {"success": True, "result": f"Timer '{name}' will run: {command}"}
 
     def _check_room(self, name: str) -> None:
@@ -303,12 +391,10 @@ class CodieTimers:
         return ", ".join(t.name for t in timers or self._timers.values())
 
     def _describe(self, timer: _Timer) -> str:
-        """One line for `timer`: its name, the time it has left and its Command."""
+        """One line for `timer`: its name, the time it has left and its Command, if it has one."""
         left = max(0, math.ceil(timer.ends_at - dt_util.utcnow().timestamp()))
-        hours, rest = divmod(left, 3600)
-        minutes, seconds = divmod(rest, 60)
-        parts = [f"{n} {unit}" for n, unit in ((hours, "h"), (minutes, "min"), (seconds, "s")) if n]
-        return f"{timer.name}: {' '.join(parts) or '0 s'} left, runs: {timer.command}"
+        line = f"{timer.name}: {_span(left)} left"
+        return f"{line}, runs: {timer.command}" if timer.command else line
 
     def _schedule(self, timer: _Timer, delay: timedelta) -> None:
         timer.cancel = async_call_later(self._hass, delay, partial(self._async_end, timer))
@@ -318,7 +404,12 @@ class CodieTimers:
         await self._store.async_save(
             {
                 "timers": [
-                    {"name": t.name, "command": t.command, "ends_at": t.ends_at}
+                    {
+                        "name": t.name,
+                        "command": t.command,
+                        "ends_at": t.ends_at,
+                        "named": t.named,
+                    }
                     for t in self._timers.values()
                 ]
             }
@@ -333,9 +424,12 @@ class CodieTimers:
         self._timers.clear()
 
     async def _async_end(self, timer: _Timer, _now: datetime) -> None:
-        """Run the Command of a Timer that ended."""
+        """Run the Command of a Timer that ended, or ring if it has none."""
         self._timers.pop(timer.name.casefold(), None)
         await self._async_save()
+        if not timer.command:
+            await self.async_announce_done(timer.name if timer.named else None)
+            return
         try:
             result = await async_converse(
                 self._hass,
@@ -355,6 +449,13 @@ class CodieTimers:
             await self._async_report_failure(
                 timer, speech or "Home Assistant could not do it", speech
             )
+
+    async def async_announce_done(self, name: str | None) -> None:
+        """Have the Character say in the AI language that the timer `name` is done."""
+        try:
+            await self._announce(done_message(self._language, name))
+        except HomeAssistantError as err:
+            _LOGGER.warning("Timer '%s' is done and the Codie could not say so: %s", name, err)
 
     async def _async_report_failure(self, timer: _Timer, reason: str, speech: str = "") -> None:
         """Log that the Command failed and have the Character say so in the AI language.
@@ -394,6 +495,12 @@ class CodieTimers:
                 ERROR_INVALID_ARGUMENTS,
                 f"Home Assistant does not understand the Command '{command}'. Rephrase it as a "
                 "short home-control sentence, such as 'turn off the kitchen lamp'.",
+            )
+        if result.intent.name in _TIMER_INTENTS:
+            raise ToolError(
+                ERROR_INVALID_ARGUMENTS,
+                f"The Command '{command}' is about a timer, which a Timer cannot run. Leave "
+                "`command` out for a plain countdown that rings when it ends.",
             )
         if result.unmatched_entities:
             # A sentence the agent knows, naming no entity or area it knows, such as a misheard
